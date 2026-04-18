@@ -1,7 +1,82 @@
-"""
-Service to integrate with Amazon Polly based on detected emotion and interpreted test using SSML mappings.
+"""Amazon Polly TTS service.
+
+PROTOCOLS.md §5.1: synthesize SSML → MP3 → upload to S3 → presigned URL.
+S3 bucket must have Block Public Access enabled (hackathon constraint C2).
+Failure fallback: raise PollyError; caller emits CAPTION without ssmlUrl.
 """
 
-class PollyTTSService:
-    def __init__(self):
-        pass
+from __future__ import annotations
+
+import os
+import uuid
+
+import boto3
+from botocore.exceptions import ClientError
+
+from common.errors import PollyError
+
+TTS_BUCKET = os.environ.get("TTS_BUCKET", "nimbus-prod-tts-audio")
+PRESIGN_TTL = int(os.environ.get("TTS_PRESIGN_TTL_S", "300"))  # 5 min
+DEFAULT_VOICE = os.environ.get("POLLY_VOICE_ID", "Matthew")
+OUTPUT_FORMAT = "mp3"
+
+_polly = None
+_s3 = None
+
+
+def _polly_client():
+    global _polly
+    if _polly is None:
+        _polly = boto3.client("polly")
+    return _polly
+
+
+def _s3_client():
+    global _s3
+    if _s3 is None:
+        _s3 = boto3.client("s3")
+    return _s3
+
+
+def synthesize(ssml: str, voice_id: str = DEFAULT_VOICE, session_id: str = "unknown") -> str:
+    """Synthesize SSML to MP3, upload to S3, return presigned URL. Raises PollyError on failure."""
+    try:
+        resp = _polly_client().synthesize_speech(
+            Text=ssml,
+            TextType="ssml",
+            OutputFormat=OUTPUT_FORMAT,
+            VoiceId=voice_id,
+        )
+        audio_bytes = resp["AudioStream"].read()
+    except Exception as exc:
+        raise PollyError(f"Polly synthesis failed: {exc}") from exc
+
+    key = f"tts/{session_id}/{uuid.uuid4()}.mp3"
+    try:
+        _s3_client().put_object(
+            Bucket=TTS_BUCKET,
+            Key=key,
+            Body=audio_bytes,
+            ContentType="audio/mpeg",
+        )
+        url = _s3_client().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": TTS_BUCKET, "Key": key},
+            ExpiresIn=PRESIGN_TTL,
+        )
+    except (ClientError, Exception) as exc:
+        raise PollyError(f"S3 upload failed: {exc}") from exc
+
+    return url
+
+
+def safe_synthesize(
+    ssml: str,
+    voice_id: str = DEFAULT_VOICE,
+    session_id: str = "unknown",
+) -> str | None:
+    """Synthesize with fallback to None (CAPTION delivered without audio)."""
+    try:
+        return synthesize(ssml, voice_id, session_id)
+    except PollyError:
+        return None

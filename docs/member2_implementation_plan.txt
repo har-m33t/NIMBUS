@@ -1,0 +1,493 @@
+================================================================================
+NIMBUS — MEMBER 2 (NICHOLAS) IMPLEMENTATION PLAN
+AI Pipeline & Orchestration Lead
+Branch: nicholas/ai-pipeline-orchestration
+Aligned with: PROTOCOLS.md (canonical spec) and CLAUDE.md
+================================================================================
+
+HACKATHON CONSTRAINTS (BINDING — OVERRIDE ANY CONFLICTING DETAIL IN PROTOCOLS.md)
+---------------------------------------------------------------------------------
+C1  NO emotion detection. Amazon Rekognition is NOT used in this build.
+    - `includeFaceCrop` is accepted in the INFER payload but the face crop
+      bytes MUST be discarded immediately on receipt; they are never persisted,
+      logged, or sent to any AWS service.
+    - Emotion is hard-coded to `"CALM"` everywhere PROTOCOLS.md references it
+      (EMOTION events, CAPTION.payload.emotion, Bedrock prompt context,
+      SSML prosody lookup). An EMOTION event is still emitted as `"CALM"` with
+      confidence 1.0 so the client contract is preserved.
+    - SSML map still loaded; only the CALM row is ever selected.
+C2  No personal, biometric, health, financial, political, religious, genetic,
+    racial/ethnic, union, payment, regulated, or malicious data may enter AWS.
+    - Face crops are biometric → discarded (see C1).
+    - Keypoints (normalized floats) are not biometric identifiers and are allowed.
+    - Session recording / export is OFF for this hackathon.
+    - No user-provided free-text beyond gloss tokens is forwarded to Bedrock.
+C3  Bedrock (generative AI) requests are globally capped at < 1 RPS.
+    - Enforced in-Lambda via a token-bucket rate limiter backed by DynamoDB
+      atomic counters (see §3.4). Per-session throttle also applied so one
+      heavy session cannot starve others.
+    - Sentence boundary rules from PROTOCOLS.md §2.2 still apply, but if a
+      flush would exceed the global 1 RPS budget, the flush is deferred (up
+      to 2 s) or dropped with a raw-gloss fallback CAPTION.
+C4  S3 Block Public Access ON for every bucket I create or touch.
+    - Bucket-level: BlockPublicAcls, IgnorePublicAcls, BlockPublicPolicy,
+      RestrictPublicBuckets ALL = true.
+    - Bucket policy explicitly denies `s3:GetObject` to `Principal: "*"`
+      unless request is via a presigned URL signed by our role.
+    - MP3 delivery is via short-lived presigned URL (ExpiresIn=300s), never
+      public-read ACL. No `PublicRead`, no static website hosting.
+    - Default SSE-S3 (AES256) encryption enabled on the bucket.
+
+SCOPE (PROTOCOLS.md §7 — Member 2 rows)
+---------------------------------------
+OWN:
+  - AI Orchestration: `NIMBUS_PROD_ProcessFrame` Lambda
+  - Bedrock prompt + invocation
+  - SSML build + Polly synthesis + S3 MP3 artifact
+  - Emitting GLOSS, EMOTION, CAPTION, ERROR events per PROTOCOLS.md §1.2
+
+NOT MINE:
+  - Mediasoup SFU / EC2 / WebRTC media (Member 1)
+  - WS $connect / $disconnect / signaling routes (Member 1)
+  - `NIMBUS_PROD_BroadcastCaption` fan-out (Member 1)
+  - `NIMBUS_PROD_Rooms` table writes (Member 1)
+  - SageMaker endpoint + model (Member 3)
+
+My Lambda’s output contract: write CAPTION event to `NIMBUS_PROD_Sessions`
+and/or invoke `NIMBUS_PROD_BroadcastCaption` (contract TBD with Member 1 —
+see Q1). I do NOT call the API Gateway Management API directly.
+
+================================================================================
+PHASE 0 — AWS + REPO FOUNDATIONS (Day 1)
+================================================================================
+
+0.1  AWS account
+     - CLI profile: `aws configure --profile nimbus-dev` (us-east-1)
+     - Request Bedrock access: `anthropic.claude-haiku-4-5` (primary),
+       `anthropic.claude-sonnet-4-6` (quality compare, §3.6)
+     - AWS Budget: $50/mo dev, alert at 50/80/100%
+     - DO NOT request Rekognition access (C1).
+     - Create SAM artifact bucket with Block Public Access ON:
+         `nimbus-prod-sam-artifacts-<accountid>`
+
+0.2  Repo layout (conforms to existing backend/ tree)
+     backend/src/config/ssml_prosody_map.json   [verify — matches §6.2]
+     backend/src/services/bedrock_interpreter.py
+     backend/src/services/polly_tts.py
+     backend/src/services/rekognition_emotion.py   [STUB ONLY per C1]
+     backend/src/handlers/process_frame.py
+     backend/src/handlers/websocket_connect.py     [Member 1 owns behavior;
+                                                    I only consume sessionId]
+     backend/src/common/*.py                       [new utilities, §0.4]
+     backend/tests/                                [new]
+
+0.3  Dependencies (backend/requirements.txt)
+     boto3>=1.34, aws-lambda-powertools>=2.30, pydantic>=2.5,
+     pytest, moto[all], python-json-logger, tenacity
+
+0.4  Shared utilities (src/common/)
+     logger.py    — Powertools Logger, correlation_id = sessionId
+     metrics.py   — Powertools Metrics, namespace "NIMBUS/Pipeline"
+     errors.py    — BedrockError, PollyError, SageMakerError, RateLimitExceeded
+     schemas.py   — pydantic models for INFER, GLOSS, EMOTION, CAPTION, ERROR
+     session.py   — NIMBUS_PROD_Sessions read/write helpers (gloss buffer,
+                    lastEmotion, lastCaptionAt, last 3 captions)
+     rate_limit.py — Bedrock global token bucket (§3.4)
+     ssml.py      — prosody map loader (reads s3://nimbus-prod-config/
+                    ssml_prosody_map.json at Lambda cold start and caches in
+                    module scope; local backend/src/config/ copy is seed data
+                    only, never read at runtime) + SSML builder
+
+================================================================================
+PHASE 1 — INFER INGRESS & SESSION STATE (Days 2–3)
+================================================================================
+
+1.1  process_frame handler skeleton
+     Route: `INFER` (per PROTOCOLS.md §1.1)
+     Steps:
+       1. Parse event → pydantic INFER model. Validate:
+            - sessionId present (UUID v4)
+            - keypoints.leftHand, rightHand arrays (may be empty per §3.3)
+            - pose array length 33 or empty
+            - sequenceNumber monotonic per session (warn if regressed)
+       2. If `includeFaceCrop: true`: IGNORE faceCropBase64 field entirely.
+          Do not read it, do not decode it, do not log its length beyond a
+          counter metric `FaceCropsDiscarded`.
+       3. Fetch session state from `NIMBUS_PROD_Sessions` (PK sessionId,
+          latest SK by descending timestamp).
+
+1.2  SageMaker invocation (Member 3 contract)
+     Client: `boto3.client("sagemaker-runtime")`
+     Endpoint: `nimbus-prod-asl-endpoint`
+     Input shape: (1, T, 258) per PROTOCOLS.md §7
+     T strategy: single-frame per INFER for v1 (T=1); upgrade to rolling
+     window after Member 3 confirms model expects temporal context.
+     Timeout: 800 ms. On timeout or non-200:
+       emit ERROR event with code `SAGEMAKER_INFERENCE_FAILED`,
+       glossFallback `[UNKNOWN_SIGN]` (PROTOCOLS.md §4.1).
+     Cold start: before first INFER, call DescribeEndpoint; if not InService,
+     emit SIGNAL `ENDPOINT_WARMING` (PROTOCOLS.md §4.3).
+
+1.3  Emit GLOSS event immediately on SageMaker response
+     Per PROTOCOLS.md §1.2 GLOSS schema. Includes sessionId, sequenceNumber,
+     tokens[], confidence. Write to `NIMBUS_PROD_Sessions.glossBuffer`
+     (UpdateItem ADD to list).
+
+1.4  Emit EMOTION event = CALM always (C1)
+     One EMOTION event per N frames (e.g., every 10 frames, matching the
+     old face-crop cadence) to preserve client UX contract:
+       { type: "EMOTION", payload: { emotion: "CALM", confidence: 1.0,
+         allEmotions: { CALM: 1.0 } } }
+     DynamoDB `lastEmotion` is fixed to "CALM".
+
+================================================================================
+PHASE 2 — GLOSS BUFFER & SENTENCE BOUNDARY (Days 3–4)
+================================================================================
+
+2.1  Buffer location
+     `NIMBUS_PROD_Sessions` item per PROTOCOLS.md §2.1:
+        PK=sessionId, SK=timestamp, glossBuffer list<string>,
+        lastEmotion "CALM", lastCaptionAt, connectionId, ttl (now+4h).
+
+2.2  Boundary detector (PROTOCOLS.md §2.2 — all four rules)
+     Flush conditions (OR):
+       a. len(glossBuffer) >= 15
+       b. now() - firstTokenAt >= 3.0 s
+       c. now() - lastTokenAt >= 1.5 s  (pause signal)
+       d. any token == "[EOS]"
+     Rule (c) cannot be triggered from inside an INFER handler alone — add a
+     scheduled sweeper: EventBridge rule every 1 s invoking
+     `NIMBUS_PROD_ProcessFrame` with action `SWEEP` that scans sessions whose
+     `lastTokenAt` is stale and flushes them.
+
+2.3  Flush procedure
+     - Conditional UpdateItem to atomically drain glossBuffer and stamp
+       lastCaptionAt (prevents double-flush races with sweeper).
+     - Read last 3 captions for this sessionId (GSI on sessionId sorted by
+       lastCaptionAt, LIMIT 3).
+     - Call bedrock_interpret(gloss_tokens, emotion="CALM", context=[...]).
+     - Call polly_synthesize(english, emotion="CALM").
+     - Emit CAPTION event per PROTOCOLS.md §1.2 (to originating session).
+     - Emit SIGNAL `NEW_CAPTION` per §1.2 with {roomId, caption payload}
+       so Member 1's `NIMBUS_PROD_BroadcastCaption` fans out to all room
+       participants.
+     - Write CAPTION payload back into DynamoDB as a new item for context.
+
+================================================================================
+PHASE 3 — BEDROCK INTERPRETER (Days 4–6)
+================================================================================
+
+3.1  Service: services/bedrock_interpreter.py
+     Client: `boto3.client("bedrock-runtime")`
+     API: `converse`
+     Model: `anthropic.claude-haiku-4-5` (env BEDROCK_MODEL_ID)
+
+3.2  Prompt (system block — prompt-cached)
+     You are an expert ASL-to-English interpreter. Convert ASL gloss token
+     sequences into fluent, grammatically correct English. ASL omits articles,
+     uses topic-comment order, and marks tense with temporal tokens
+     (YESTERDAY, FINISH, WILL). Rules:
+       - Preserve meaning; do not invent facts.
+       - Output ONE sentence unless gloss clearly contains multiple.
+       - Return strict JSON: {"english": "...", "confidence": 0.0-1.0}.
+       - If gloss is too short/ambiguous:
+         {"english": null, "reason": "insufficient"}.
+
+     User block:
+       <prior_captions>{up to 3 previous English sentences}</prior_captions>
+       <emotion>CALM</emotion>
+       <gloss>YESTERDAY STORE I GO FINISH MILK BUY</gloss>
+
+3.3  Inference config
+     maxTokens=120, temperature=0.2, topP=0.9
+     Timeout: 1500 ms. On timeout emit ERROR `BEDROCK_TIMEOUT`, caption
+     falls back to space-joined gloss (PROTOCOLS.md §4.1).
+
+3.4  RATE LIMITING (C3 — strict < 1 RPS global)
+     Token bucket in DynamoDB:
+       Table: `NIMBUS_PROD_Sessions` (reuse) or new `NIMBUS_PROD_RateLimit`
+       Item: PK="bedrock_global"
+       Attrs: tokens (Number), lastRefillMs (Number)
+       Config: capacity=1, refillRate=1/sec (one token per second)
+
+     Before each invoke:
+       1. UpdateItem with ConditionExpression:
+            "tokens >= :one"
+          Atomic decrement + refill based on now() - lastRefillMs.
+       2. If ConditionalCheckFailed:
+            - Retry up to 2 s with 100 ms backoff.
+            - If still blocked: emit ERROR `BEDROCK_TIMEOUT` with raw-gloss
+              fallback caption. Metric: BedrockRateLimited++.
+
+     Per-session soft cap: max 1 Bedrock call every 2 s per sessionId,
+     tracked on the session item itself, to prevent one session monopolizing.
+
+     Additional defensive layer: request a Bedrock service quota INCREASE
+     to zero is not possible, so we rely on our in-Lambda limiter. Also set
+     Lambda reserved concurrency on `NIMBUS_PROD_ProcessFrame` = 10 to
+     cap maximum theoretical RPS.
+
+3.5  Robustness
+     - JSON parse retry once with "Return ONLY valid JSON." appended.
+     - Circuit breaker: 3 consecutive Bedrock errors within 30 s → open
+       circuit for 60 s; all flushes use raw-gloss fallback during open state.
+     - Cost guard: if gloss tokens >50, truncate to last 50 (should be
+       unreachable given boundary rule a = 15 tokens).
+
+3.6  Model quality check (Day 12)
+     Run 50-sample gloss fixture through Haiku vs Sonnet; pick the cheaper
+     one if quality delta is small. Doc in PRs.
+
+================================================================================
+PHASE 4 — REKOGNITION (DISABLED — STUB ONLY)
+================================================================================
+
+Per C1, emotion detection is disabled. services/rekognition_emotion.py
+contains a stub:
+
+    def detect(_face_jpeg_bytes=None) -> Emotion:
+        # Hackathon policy C1: no Rekognition, no biometric processing.
+        return Emotion(label="CALM", confidence=1.0, source="disabled")
+
+No IAM permission for Rekognition is granted on the Lambda role. No face
+bytes ever reach AWS. If PROTOCOLS.md is later relaxed, re-enable by:
+  - granting rekognition:DetectFaces on LambdaExecutionRole
+  - restoring detect() body
+  - wiring face bytes from INFER.faceCropBase64
+
+================================================================================
+PHASE 5 — POLLY TTS (Days 6–8)
+================================================================================
+
+5.1  Service: services/polly_tts.py
+     Client: `boto3.client("polly")`
+     Engine: neural, VoiceId from ssml_prosody_map.json.defaultVoiceId
+     (PROTOCOLS.md §6.2 → "Matthew"). Output: mp3.
+
+5.2  SSML builder (src/common/ssml.py)
+     Template per PROTOCOLS.md §6.3:
+       <speak><prosody pitch="{pitch}" rate="{rate}" volume="{volume}">
+         {escaped_text}
+       </prosody></speak>
+     Always looks up CALM row (C1). Text XML-escaped (& < > ' ").
+     Max text length: 200 chars; split on "." if longer; concatenate mp3s.
+
+5.3  S3 artifact bucket — `nimbus-prod-tts-audio` (PROTOCOLS.md §5.1)
+
+     CREATE WITH BLOCK PUBLIC ACCESS (C4):
+       AWS::S3::Bucket properties:
+         BucketName: nimbus-prod-tts-audio
+         PublicAccessBlockConfiguration:
+           BlockPublicAcls: true
+           IgnorePublicAcls: true
+           BlockPublicPolicy: true
+           RestrictPublicBuckets: true
+         OwnershipControls:
+           Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+         BucketEncryption:
+           ServerSideEncryptionConfiguration:
+             - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+         LifecycleConfiguration:
+           Rules:
+             - Id: ExpireTTSAfter1Day
+               Status: Enabled
+               ExpirationInDays: 1
+
+     Bucket policy (explicit deny for any non-SigV4 request):
+       Statement:
+         - Sid: DenyInsecureTransport
+           Effect: Deny
+           Principal: "*"
+           Action: "s3:*"
+           Resource: ["arn:aws:s3:::nimbus-prod-tts-audio",
+                     "arn:aws:s3:::nimbus-prod-tts-audio/*"]
+           Condition: { Bool: { "aws:SecureTransport": "false" } }
+         - Sid: DenyAnonymousGets
+           Effect: Deny
+           Principal: "*"
+           Action: "s3:GetObject"
+           Resource: "arn:aws:s3:::nimbus-prod-tts-audio/*"
+           Condition: { StringNotEquals: { "aws:PrincipalArn":
+             "arn:aws:iam::<acct>:role/NIMBUS_PROD_LambdaExecutionRole" } }
+
+     Apply the same block-public-access settings to any other bucket I
+     create (SAM artifacts bucket, config bucket if I touch it).
+
+5.4  Synthesize flow
+     def synthesize(text: str, emotion: str = "CALM") -> AudioArtifact:
+         ssml = build_ssml(text, emotion)
+         audio = polly.synthesize_speech(Text=ssml, TextType="ssml",
+                    OutputFormat="mp3", VoiceId=voice, Engine="neural")
+         key = f"{sessionId}/{uuid4()}.mp3"
+         s3.put_object(Bucket="nimbus-prod-tts-audio", Key=key,
+                       Body=audio["AudioStream"].read(),
+                       ContentType="audio/mpeg",
+                       ServerSideEncryption="AES256")
+         url = s3.generate_presigned_url("get_object",
+                 Params={"Bucket":"nimbus-prod-tts-audio","Key":key},
+                 ExpiresIn=300)
+         return AudioArtifact(url=url, key=key)
+
+     CAPTION event includes `audioUrl` (the presigned URL). Note
+     PROTOCOLS.md §1.2 shows `s3://` — I will emit the HTTPS presigned URL
+     and raise this as a spec deviation to confirm with Member 1 (Q3).
+
+5.5  Polly failure fallback (PROTOCOLS.md §4.1)
+     On exception: still emit CAPTION with audioUrl=null; metric
+     PollyFailures++; client will show caption without audio.
+
+================================================================================
+PHASE 6 — OBSERVABILITY (Days 8–9)
+================================================================================
+
+6.1  Structured JSON logs
+     Fields: sessionId, roomId, stage (sagemaker|bedrock|polly|broadcast),
+             durationMs, outcome, errorClass, bedrockTokensIn/Out,
+             pollyChars, rateLimited (bool).
+
+6.2  Metrics (EMF, namespace NIMBUS/Pipeline)
+     - PipelineLatencyMs (per stage + total)
+     - BedrockInvocations, BedrockRateLimited, BedrockTokensIn/Out
+     - PollyCharactersSynthesized, PollyFailures
+     - FaceCropsDiscarded (C1 audit metric)
+     - GlossBufferFlushes by reason (tokenCount|time|pause|EOS)
+     - CaptionsEmitted
+
+6.3  Alarms
+     - p95 end-to-end > 1500 ms for 5 min (matches "Poor" threshold)
+     - Bedrock error rate > 10% for 5 min
+     - Any FaceCrop decoded (should be 0; counter-alarm on misconfiguration)
+     - Lambda throttles > 0
+
+================================================================================
+PHASE 7 — TESTING (Days 9–11)
+================================================================================
+
+7.1  Unit (pytest + moto)
+     - Schema validation: valid INFER, missing fields, face crop IS discarded.
+     - bedrock_interpreter: mock converse (happy path, JSON retry, circuit
+       breaker, rate-limit deferral).
+     - rate_limit: concurrent invokes honor 1 RPS ceiling (use moto DDB).
+     - polly_tts: SSML correctness with CALM row; XML escape edge cases.
+     - ssml builder: golden test for CALM only.
+     - Boundary detector: each of rules a-d triggers exactly once.
+
+7.2  Integration (dev AWS account)
+     - Simulate WS INFER sequence; assert GLOSS, EMOTION=CALM, CAPTION.
+     - Assert nimbus-prod-tts-audio rejects anonymous GET (S3 HeadBucket /
+       GetObject from unauthenticated client returns 403).
+     - Assert Bedrock call rate never exceeds 1 RPS under a 5 RPS INFER load.
+
+7.3  Compliance audit (C2 / C4)
+     - grep: no `faceCrop` bytes read in any code path reachable from
+       lambda_handler.
+     - IAM policy lint: no rekognition:* granted; only bedrock:InvokeModel
+       on specific model ARN.
+     - S3 PublicAccessBlock verified via
+       `aws s3api get-public-access-block --bucket nimbus-prod-tts-audio`
+       — all four flags = true.
+
+================================================================================
+PHASE 8 — DEPLOYMENT (Day 12)
+================================================================================
+
+8.1  template.yaml additions (SAM)
+     - AWS::Serverless::Function `NIMBUS_PROD_ProcessFrame`
+         Runtime: python3.12
+         Timeout: 10 s
+         MemorySize: 1024
+         ReservedConcurrentExecutions: 10   [C3 defense-in-depth]
+         Environment: BEDROCK_MODEL_ID, POLLY_VOICE_ID, TTS_BUCKET,
+                      SESSIONS_TABLE, PROSODY_CONFIG_KEY, STAGE
+     - AWS::Events::Rule (every 1 minute) → ProcessFrame `SWEEP` action
+         (the 1.5s pause rule uses client-side tick + this sweeper)
+     - AWS::S3::Bucket `nimbus-prod-tts-audio` with PublicAccessBlockConfig
+       and LifecycleConfig (see §5.3).
+     - Bucket policy on the above (§5.3).
+     - AWS::IAM::ManagedPolicy for `NIMBUS_PROD_LambdaExecutionRole`:
+         bedrock:InvokeModel on
+           arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5
+         polly:SynthesizeSpeech (*)
+         s3:PutObject, s3:GetObject on arn:aws:s3:::nimbus-prod-tts-audio/*
+         s3:GetObject on arn:aws:s3:::nimbus-prod-config/ssml_prosody_map.json
+         dynamodb:GetItem/PutItem/UpdateItem/Query on
+           NIMBUS_PROD_Sessions
+         sagemaker:InvokeEndpoint on nimbus-prod-asl-endpoint
+         logs:* on own log group
+       NO rekognition:*. NO s3:*Acl. NO s3:PutBucketPublicAccessBlock
+       (immutable after creation).
+     - samconfig.toml (profile=nimbus-dev, region=us-east-1, stack-name
+       nimbus-prod-member2)
+
+8.2  CI (optional for hackathon)
+     GitHub Actions: ruff → pytest → sam build → sam deploy dev on PR.
+
+================================================================================
+DEVIATIONS FROM PROTOCOLS.md (require PR to PROTOCOLS.md per footer rule)
+================================================================================
+
+D1  Emotion detection removed. EMOTION events emit "CALM" / 1.0 always.
+    Justification: hackathon policy C1/C2 (no biometric processing).
+D2  Bedrock rate limited to < 1 RPS globally, with deferral + raw-gloss
+    fallback if boundary rule fires during exhaustion. Justification: C3.
+D3  CAPTION.audioUrl emitted as HTTPS presigned URL (not `s3://`).
+    Justification: clients cannot fetch raw `s3://` URIs; presigned HTTPS
+    with 300 s TTL is the only safe route given C4 bucket lockdown.
+D4  Session recording / `nimbus-prod-session-exports` NOT used.
+    Justification: C2 data-minimization.
+
+================================================================================
+OPEN QUESTIONS
+================================================================================
+
+Q1  RESOLVED by PROTOCOLS.md §1.2 SIGNAL events list — `NEW_CAPTION` is
+    the signaling event. My Lambda emits CAPTION (direct to originating
+    sessionId connection) AND a SIGNAL `NEW_CAPTION` with the caption
+    payload + roomId. Member 1's `NIMBUS_PROD_BroadcastCaption` consumes
+    NEW_CAPTION and fans out to all connectionIds in `NIMBUS_PROD_Rooms`.
+    Confirm invocation mechanism with Member 1 (async Lambda invoke vs
+    SQS vs direct write to an event table).
+Q2  Does Member 3's v1 model need temporal context (T>1)? If so, I must
+    maintain a rolling keypoint window in Lambda memory or DDB.
+Q3  Confirm CAPTION.audioUrl format change (D3) with Member 1's client.
+Q4  Where does the client get the SageMaker endpoint warming status from?
+    My Lambda emits SIGNAL ENDPOINT_WARMING; Member 1's broadcast must relay.
+
+================================================================================
+MILESTONES
+================================================================================
+
+M1  (end of week 1)  AWS profile + Bedrock access live; SAM stack deploys;
+                     INFER returns canned GLOSS + CALM EMOTION; S3 bucket
+                     hardened and audited.
+M2  (end of week 2)  Bedrock + Polly end-to-end; rate limiter honors 1 RPS
+                     under load test; CAPTION event includes presigned URL.
+M3  (end of week 3)  Integration with real SageMaker endpoint (Member 3);
+                     broadcast path working with Member 1; latency <1500 ms p95.
+M4  (end of week 4)  Polish, compliance audit clean, dashboard + alarms,
+                     demo-ready.
+
+================================================================================
+FILE-BY-FILE CHECKLIST
+================================================================================
+
+backend/src/common/logger.py                [new]
+backend/src/common/metrics.py               [new]
+backend/src/common/errors.py                [new]
+backend/src/common/schemas.py               [new]
+backend/src/common/session.py               [new]  Sessions table helpers
+backend/src/common/rate_limit.py            [new]  Bedrock 1 RPS token bucket
+backend/src/common/ssml.py                  [new]  prosody loader + builder
+backend/src/handlers/process_frame.py       [update]  orchestrator + SWEEP
+backend/src/services/bedrock_interpreter.py [update]  converse + prompt + RL
+backend/src/services/polly_tts.py           [update]  SSML + S3 (hardened)
+backend/src/services/rekognition_emotion.py [stub]   returns CALM (C1)
+backend/src/config/ssml_prosody_map.json    [verify] matches PROTOCOLS §6.2
+backend/tests/                              [new]    unit + compliance
+backend/template.yaml                       [update] Lambda, S3 (BPA), IAM
+backend/samconfig.toml                      [new]
+docs/API.md                                 [update] add D1–D4 deviations
+
+================================================================================
+END OF PLAN
+================================================================================
