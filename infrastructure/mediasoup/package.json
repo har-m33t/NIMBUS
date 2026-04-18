@@ -1,0 +1,19 @@
+{
+  "name": "nimbus-mediasoup",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NIMBUS SFU — multi-party WebRTC routing via mediasoup v3.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "NODE_ENV=development node src/server.js",
+    "test": "node --test test/peer.test.js test/room.test.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "mediasoup": "^3.14.8",
+    "ws": "^8.17.1"
+  }
+}

@@ -19,3 +19,6 @@ venv/
 
 # macOS
 .DS_Store
+
+# Claude Code (per-user local settings; don't check in)
+.claude/settings.local.json
