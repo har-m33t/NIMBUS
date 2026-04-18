@@ -1,12 +1,426 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: ASL Interpreter AWS Backend Orchestration
+Description: >
+  NIMBUS — Real-time ASL Interpretation Backend.
+  Member 1 (Frontend): see Outputs.WebSocketURL
+  Member 3 (ML Pipeline): see Outputs.SageMakerEndpointName + Outputs.ModelArtifactsBucket
+
+Parameters:
+  SageMakerEndpointName:
+    Type: String
+    Default: nimbus-prod-asl-endpoint
+    Description: Name of the SageMaker ASL inference endpoint (Member 3 owns this)
+
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-haiku-20240307-v1:0
+    Description: Bedrock foundation model ID for gloss→English interpretation
+
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [prod, staging, dev]
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures: [arm64]
+    CodeUri: src/
+    Timeout: 29
+    MemorySize: 512
+    Tracing: Active
+    Environment:
+      Variables:
+        POWERTOOLS_SERVICE_NAME: nimbus
+        POWERTOOLS_METRICS_NAMESPACE: NIMBUS
+        LOG_LEVEL: INFO
+        ENVIRONMENT: !Ref Environment
+        SESSIONS_TABLE: !Ref SessionsTable
+        SAGEMAKER_ENDPOINT: !Ref SageMakerEndpointName
+        TTS_BUCKET: !Ref TTSAudioBucket
+        CONFIG_BUCKET: !Ref ConfigBucket
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
 
 Resources:
-  # To be filled during implementation
+
+  # ── WebSocket API ────────────────────────────────────────────────────────────
+
   WebSocketApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
-      Name: ASLInterpreterWebSocketApi
+      Name: NIMBUS_PROD_WS
       ProtocolType: WEBSOCKET
       RouteSelectionExpression: "$request.body.action"
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      Target: !Sub integrations/${ConnectIntegration}
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      Target: !Sub integrations/${DisconnectIntegration}
+
+  InferRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: INFER
+      AuthorizationType: NONE
+      Target: !Sub integrations/${ProcessFrameIntegration}
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WSConnectFunction.Arn}/invocations
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WSDisconnectFunction.Arn}/invocations
+
+  ProcessFrameIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProcessFrameFunction.Arn}/invocations
+
+  ApiDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn: [ConnectRoute, DisconnectRoute, InferRoute]
+    Properties:
+      ApiId: !Ref WebSocketApi
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebSocketApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: prod
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+
+  # ── Lambda Functions ─────────────────────────────────────────────────────────
+
+  WSConnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: NIMBUS_PROD_WS_Connect
+      Handler: handlers.websocket_connect.handler
+      MemorySize: 128
+      Description: WebSocket $connect — registers connection
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SessionsTable
+
+  WSConnectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt WSConnectFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/$connect
+
+  WSDisconnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: NIMBUS_PROD_WS_Disconnect
+      Handler: handlers.websocket_disconnect.handler
+      MemorySize: 128
+      Description: WebSocket $disconnect — cleans up connection record
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SessionsTable
+
+  WSDisconnectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt WSDisconnectFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/$disconnect
+
+  ProcessFrameFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: NIMBUS_PROD_ProcessFrame
+      Handler: handlers.process_frame.handler
+      MemorySize: 1024
+      Description: "INFER route: SageMaker → Bedrock → Polly → CAPTION + SIGNAL"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SessionsTable
+        - S3WritePolicy:
+            BucketName: !Ref TTSAudioBucket
+        - S3ReadPolicy:
+            BucketName: !Ref ConfigBucket
+        - Statement:
+            # SageMaker inference — C1: NO rekognition:* permissions anywhere
+            # Wildcard used so deploy succeeds before Member 3 creates the endpoint
+            - Effect: Allow
+              Action: sagemaker:InvokeEndpoint
+              Resource: !Sub arn:${AWS::Partition}:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/*
+            # Bedrock — C3: < 1 RPS enforced in code via DDB token bucket
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: "*"
+            # Polly — C4: audio delivered via presigned S3 URL, not public endpoint
+            - Effect: Allow
+              Action: polly:SynthesizeSpeech
+              Resource: "*"
+            # Push messages back to connected clients
+            - Effect: Allow
+              Action: execute-api:ManageConnections
+              Resource: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/prod/*
+
+  ProcessFramePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ProcessFrameFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*/INFER
+
+  SweepFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: NIMBUS_PROD_WS_Sweep
+      Handler: handlers.sweep.handler
+      MemorySize: 256
+      Timeout: 55
+      Description: "Scheduled sweep: flush stale gloss buffers (PROTOCOLS.md §2.2 rule 3)"
+      Environment:
+        Variables:
+          SWEEP_PAUSE_MS: "1500"
+      Events:
+        SweepSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+            Description: Scan all active sessions for stale buffers every minute
+            Enabled: true
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SessionsTable
+        - S3WritePolicy:
+            BucketName: !Ref TTSAudioBucket
+        - S3ReadPolicy:
+            BucketName: !Ref ConfigBucket
+        - Statement:
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
+            - Effect: Allow
+              Action: polly:SynthesizeSpeech
+              Resource: "*"
+            - Effect: Allow
+              Action: execute-api:ManageConnections
+              Resource: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/prod/*
+
+  WarmEndpointFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: NIMBUS_PROD_WarmEndpoint
+      Handler: handlers.warm_endpoint.handler
+      MemorySize: 128
+      Timeout: 15
+      Description: "Keeps SageMaker endpoint warm every 5 min to prevent cold starts"
+      Events:
+        WarmSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Description: Prevent SageMaker cold-start latency
+            Enabled: true
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: sagemaker:InvokeEndpoint
+              Resource: !Sub arn:${AWS::Partition}:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/*
+
+  # ── DynamoDB ─────────────────────────────────────────────────────────────────
+
+  SessionsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: NIMBUS_PROD_Sessions
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: sessionId
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: sessionId
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  VocabularyTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: NIMBUS_PROD_Vocabulary
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: gloss
+          AttributeType: S
+      KeySchema:
+        - AttributeName: gloss
+          KeyType: HASH
+
+  # ── S3 Buckets — all with Block Public Access (hackathon constraint C4) ──────
+
+  ModelArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub nimbus-prod-model-artifacts-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+
+  TTSAudioBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub nimbus-prod-tts-audio-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAudioAfter1Day
+            Status: Enabled
+            ExpirationInDays: 1
+
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub nimbus-prod-config-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+
+  SessionExportsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub nimbus-prod-session-exports-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveAfter30Days
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+            ExpirationInDays: 90
+
+# ── Outputs ────────────────────────────────────────────────────────────────────
+# These are the handoff values your teammates need after `sam deploy`.
+
+Outputs:
+
+  WebSocketURL:
+    Description: >
+      [Member 1 — Frontend] Connect to this WSS URL from the Python Zoom client.
+      Set NIMBUS_WS_URL env var in frontend/src/main.py to this value.
+    Value: !Sub wss://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/prod
+    Export:
+      Name: NIMBUS-PROD-WebSocketURL
+
+  SageMakerEndpointName:
+    Description: >
+      [Member 3 — ML Pipeline] Deploy your model to this endpoint name.
+      Use `aws sagemaker create-endpoint --endpoint-name <value>` or update
+      the SageMakerEndpointName parameter on redeploy.
+    Value: !Ref SageMakerEndpointName
+    Export:
+      Name: NIMBUS-PROD-SageMakerEndpoint
+
+  ModelArtifactsBucketName:
+    Description: >
+      [Member 3 — ML Pipeline] Upload model.tar.gz here before creating the
+      SageMaker model. Path: s3://<bucket>/models/nimbus-asl/model.tar.gz
+    Value: !Ref ModelArtifactsBucket
+    Export:
+      Name: NIMBUS-PROD-ModelArtifactsBucket
+
+  SessionsTableName:
+    Description: DynamoDB Sessions table (gloss buffer, captions, rate-limit bucket)
+    Value: !Ref SessionsTable
+    Export:
+      Name: NIMBUS-PROD-SessionsTable
+
+  ConfigBucketName:
+    Description: >
+      Upload ssml_prosody_map.json here to retune Polly voice without redeployment.
+      Key: ssml_prosody_map.json
+    Value: !Ref ConfigBucket
+    Export:
+      Name: NIMBUS-PROD-ConfigBucket
+
+  TTSAudioBucketName:
+    Description: Polly MP3 files land here; served via presigned URL (5-min TTL)
+    Value: !Ref TTSAudioBucket
+    Export:
+      Name: NIMBUS-PROD-TTSAudioBucket
