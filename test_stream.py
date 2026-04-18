@@ -198,91 +198,92 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open camera {camera_index}")
 
-    sm = _sm_runtime()
-    mp_holistic = mp.solutions.holistic
-    mp_draw = mp.solutions.drawing_utils
-    mp_styles = mp.solutions.drawing_styles
+    try:
+        sm = _sm_runtime()
+        mp_holistic = mp.solutions.holistic
+        mp_draw = mp.solutions.drawing_utils
+        mp_styles = mp.solutions.drawing_styles
 
-    frame_buffer: deque[np.ndarray] = deque(maxlen=buffer_frames)
-    last_tokens: list[str] = []
-    last_confidence = 0.0
-    last_latency_ms = 0.0
-    last_error: str | None = None
+        frame_buffer: deque[np.ndarray] = deque(maxlen=buffer_frames)
+        last_tokens: list[str] = []
+        last_confidence = 0.0
+        last_latency_ms = 0.0
+        last_error: str | None = None
 
-    next_capture = time.monotonic()
-    fps_ts: deque[float] = deque(maxlen=30)
+        next_capture = time.monotonic()
+        fps_ts: deque[float] = deque(maxlen=30)
 
-    logger.info("Streaming to endpoint: %s  |  buffer=%d frames  |  Q to quit",
-                endpoint_name, buffer_frames)
+        logger.info("Streaming to endpoint: %s  |  buffer=%d frames  |  Q to quit",
+                    endpoint_name, buffer_frames)
 
-    with mp_holistic.Holistic(
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    ) as holistic:
-        while True:
-            ret, bgr = cap.read()
-            if not ret:
-                logger.warning("Camera read failed — skipping frame")
-                continue
+        with mp_holistic.Holistic(
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        ) as holistic:
+            while True:
+                ret, bgr = cap.read()
+                if not ret:
+                    logger.warning("Camera read failed — skipping frame")
+                    continue
 
-            now = time.monotonic()
-            fps_ts.append(now)
-            display_fps = len(fps_ts) / (fps_ts[-1] - fps_ts[0] + 1e-6) if len(fps_ts) > 1 else 0.0
+                now = time.monotonic()
+                fps_ts.append(now)
+                display_fps = len(fps_ts) / (fps_ts[-1] - fps_ts[0] + 1e-6) if len(fps_ts) > 1 else 0.0
 
-            # Only process + send at TARGET_FPS
-            if now >= next_capture:
-                next_capture = now + FRAME_INTERVAL_S
+                # Only process + send at TARGET_FPS
+                if now >= next_capture:
+                    next_capture = now + FRAME_INTERVAL_S
 
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                rgb.flags.writeable = False
-                results = holistic.process(rgb)
-                rgb.flags.writeable = True
+                    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                    rgb.flags.writeable = False
+                    results = holistic.process(rgb)
+                    rgb.flags.writeable = True
 
-                kp = extract_keypoints(results)
-                frame_buffer.append(kp)
+                    kp = extract_keypoints(results)
+                    frame_buffer.append(kp)
 
-                if len(frame_buffer) == buffer_frames:
-                    buf_array = np.stack(list(frame_buffer))  # (T, 258)
-                    t0 = time.monotonic()
-                    tokens, conf, err = invoke_endpoint(sm, endpoint_name, buf_array)
-                    last_latency_ms = (time.monotonic() - t0) * 1000
-                    if err:
-                        last_error = err
-                    else:
-                        last_error = None
-                        last_tokens = tokens or []
-                        last_confidence = conf
-                    frame_buffer.clear()
+                    if len(frame_buffer) == buffer_frames:
+                        buf_array = np.stack(list(frame_buffer))  # (T, 258)
+                        t0 = time.monotonic()
+                        tokens, conf, err = invoke_endpoint(sm, endpoint_name, buf_array)
+                        last_latency_ms = (time.monotonic() - t0) * 1000
+                        if err:
+                            last_error = err
+                        else:
+                            last_error = None
+                            last_tokens = tokens or []
+                            last_confidence = conf
+                        frame_buffer.clear()
 
-                # Draw landmarks on the display frame
-                mp_draw.draw_landmarks(
-                    bgr, results.left_hand_landmarks,
-                    mp_holistic.HAND_CONNECTIONS,
-                    mp_styles.get_default_hand_landmarks_style(),
-                    mp_styles.get_default_hand_connections_style(),
-                )
-                mp_draw.draw_landmarks(
-                    bgr, results.right_hand_landmarks,
-                    mp_holistic.HAND_CONNECTIONS,
-                    mp_styles.get_default_hand_landmarks_style(),
-                    mp_styles.get_default_hand_connections_style(),
-                )
-                mp_draw.draw_landmarks(
-                    bgr, results.pose_landmarks,
-                    mp_holistic.POSE_CONNECTIONS,
-                    mp_styles.get_default_pose_landmarks_style(),
-                )
+                    # Draw landmarks on the display frame
+                    mp_draw.draw_landmarks(
+                        bgr, results.left_hand_landmarks,
+                        mp_holistic.HAND_CONNECTIONS,
+                        mp_styles.get_default_hand_landmarks_style(),
+                        mp_styles.get_default_hand_connections_style(),
+                    )
+                    mp_draw.draw_landmarks(
+                        bgr, results.right_hand_landmarks,
+                        mp_holistic.HAND_CONNECTIONS,
+                        mp_styles.get_default_hand_landmarks_style(),
+                        mp_styles.get_default_hand_connections_style(),
+                    )
+                    mp_draw.draw_landmarks(
+                        bgr, results.pose_landmarks,
+                        mp_holistic.POSE_CONNECTIONS,
+                        mp_styles.get_default_pose_landmarks_style(),
+                    )
 
-            draw_overlay(bgr, last_tokens, last_confidence,
-                         last_latency_ms, display_fps, last_error)
-            cv2.imshow("NIMBUS — ASL Live Test  (Q to quit)", bgr)
+                draw_overlay(bgr, last_tokens, last_confidence,
+                             last_latency_ms, display_fps, last_error)
+                cv2.imshow("NIMBUS — ASL Live Test  (Q to quit)", bgr)
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                logger.info("Q pressed — exiting")
-                break
-
-    cap.release()
-    cv2.destroyAllWindows()
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    logger.info("Q pressed — exiting")
+                    break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
 
 
 # ---------------------------------------------------------------------------
@@ -307,11 +308,15 @@ def main() -> None:
         )
     logger.info("Using role: %s", role_arn)
 
-    run(
-        camera_index=args.camera,
-        buffer_frames=args.buffer_frames,
-        endpoint_name=args.endpoint,
-    )
+    try:
+        run(
+            camera_index=args.camera,
+            buffer_frames=args.buffer_frames,
+            endpoint_name=args.endpoint,
+        )
+    except RuntimeError as exc:
+        logger.error("Startup failed: %s", exc)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
