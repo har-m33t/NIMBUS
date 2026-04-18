@@ -16,14 +16,6 @@ Model files (~30 MB total) are downloaded automatically on first run to .mediapi
 """
 from __future__ import annotations
 
-import sys
-if sys.version_info >= (3, 13):
-    raise RuntimeError(
-        "mediapipe does not support Python 3.13+. "
-        "Re-run with Python 3.11 or 3.12, e.g.:\n"
-        "  py -3.12 test_stream.py"
-    )
-
 import argparse
 import json
 import logging
