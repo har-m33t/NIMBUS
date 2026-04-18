@@ -26,7 +26,7 @@ ROLE_ARN = os.environ["SAGEMAKER_ROLE_ARN"]
 # PyTorch inference container image — override via env if needed
 CONTAINER_IMAGE = os.environ.get(
     "SAGEMAKER_CONTAINER_IMAGE",
-    "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.1.0-gpu-py310",
+    "763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-inference:2.1.0-gpu-py310",
 )
 
 
@@ -127,7 +127,7 @@ def poll_until_ready(endpoint_name: str) -> None:
 
 
 if __name__ == "__main__":
-    s3_uri = "s3://asl-hackathon/models/v1/model.tar.gz"
+    s3_uri = "s3://asl-hackathon-usw2/models/v1/model.tar.gz"
 
     model_name = create_model(s3_uri)
     config_name = create_endpoint_config(model_name)
