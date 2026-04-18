@@ -1,0 +1,21 @@
+# SAM build artifacts
+backend/.aws-sam/
+backend/samconfig.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment
+.env
+*.env.local
+
+# macOS
+.DS_Store
