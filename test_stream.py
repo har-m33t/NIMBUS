@@ -25,10 +25,17 @@ from typing import Any
 import boto3
 import cv2
 import mediapipe as mp
-from mediapipe.python.solutions import drawing_styles as _mp_styles
-from mediapipe.python.solutions import drawing_utils as _mp_draw
-from mediapipe.python.solutions import holistic as _mp_holistic
 import numpy as np
+
+try:
+    _mp_holistic = mp.solutions.holistic
+    _mp_draw = mp.solutions.drawing_utils
+    _mp_styles = mp.solutions.drawing_styles
+except AttributeError as _e:
+    raise ImportError(
+        "mediapipe.solutions not available — Holistic was removed in mediapipe>=0.10.18.\n"
+        "Install the last compatible release:  pip install 'mediapipe==0.10.9'"
+    ) from _e
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
