@@ -25,7 +25,16 @@ _torch_stub.cuda = MagicMock()
 _torch_stub.cuda.is_available = lambda: False
 _torch_stub.load = MagicMock()
 _torch_stub.no_grad = MagicMock(return_value=MagicMock(__enter__=lambda s, *a: s, __exit__=lambda s, *a: None))
-_torch_stub.tensor = lambda data, **kw: MagicMock(to=lambda d: MagicMock())
+
+def _mock_tensor_with_ops(*args, **kw):
+    mock = MagicMock()
+    mock.mean = MagicMock(return_value=MagicMock(item=lambda: 0.75))
+    mock.max = MagicMock(return_value=(MagicMock(item=lambda: 0), MagicMock(item=lambda: 0)))
+    mock.to = MagicMock(return_value=mock)
+    return mock
+
+_torch_stub.tensor = _mock_tensor_with_ops
+_torch_stub.softmax = MagicMock(return_value=MagicMock(max=lambda dim: (MagicMock(mean=lambda: MagicMock(item=lambda: 0.75)), MagicMock(item=lambda: 0))))
 
 _nn = types.ModuleType("torch.nn")
 _nn.Module = object
@@ -112,5 +121,5 @@ def test_output_fn_null_tokens_below_threshold():
 
     assert content_type == "application/json"
     parsed = json.loads(body)
-    tokens = parsed["predictions"][0]["tokens"]
+    tokens = parsed["tokens"]
     assert tokens is None, f"expected null tokens below threshold, got {tokens!r}"
