@@ -52,7 +52,7 @@ def test_caption_emitted_on_15_token_boundary(monkeypatch, patched_base):
 
     # Fake append_gloss returning a 15-token buffer
     big_buf = ["TOK"] * 15
-    def fake_append(sid, tokens, cid, rid):
+    def fake_append(sid, tokens, cid, rid, emotion="CALM"):
         return {"glossBuffer": big_buf, "firstTokenAt": int(time.time() * 1000) - 100, "timestamp": "2026-04-18T12:00:00.000Z"}
     monkeypatch.setattr(process_frame, "append_gloss", fake_append)
     monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk="STATE": big_buf)
@@ -77,7 +77,7 @@ def test_caption_emitted_on_15_token_boundary(monkeypatch, patched_base):
 def test_caption_emitted_on_eos_token(monkeypatch, patched_base):
     from handlers import process_frame
 
-    def fake_append(sid, tokens, cid, rid):
+    def fake_append(sid, tokens, cid, rid, emotion="CALM"):
         return {"glossBuffer": tokens, "firstTokenAt": int(time.time() * 1000) - 100, "timestamp": "2026-04-18T12:00:00.000Z"}
     monkeypatch.setattr(process_frame, "append_gloss", fake_append)
     monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk="STATE": ["HELLO", "[EOS]"])
@@ -99,7 +99,7 @@ def test_caption_emitted_on_eos_token(monkeypatch, patched_base):
 def test_no_flush_below_limit(monkeypatch, patched_base):
     from handlers import process_frame
 
-    def fake_append(sid, tokens, cid, rid):
+    def fake_append(sid, tokens, cid, rid, emotion="CALM"):
         return {"glossBuffer": ["TOK"] * 3, "firstTokenAt": int(time.time() * 1000) - 100, "timestamp": "2026-04-18T12:00:00.000Z"}
     monkeypatch.setattr(process_frame, "append_gloss", fake_append)
     monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk="STATE": None)
@@ -116,7 +116,7 @@ def test_new_caption_signal_emitted_with_caption(monkeypatch, patched_base):
     from handlers import process_frame
 
     big_buf = ["A"] * 15
-    def fake_append(sid, tokens, cid, rid):
+    def fake_append(sid, tokens, cid, rid, emotion="CALM"):
         return {"glossBuffer": big_buf, "firstTokenAt": int(time.time() * 1000) - 100, "timestamp": "2026-04-18T12:00:00.000Z"}
     monkeypatch.setattr(process_frame, "append_gloss", fake_append)
     monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk="STATE": big_buf)

@@ -380,11 +380,14 @@ Resources:
         - LambdaInvokePolicy:
             FunctionName: !Ref BroadcastCaptionFunction
         - Statement:
-            # SageMaker inference — C1: NO rekognition:* permissions anywhere.
-            # Wildcard used so deploy succeeds before Member 3 creates the endpoint.
+            # SageMaker inference — wildcard so deploy succeeds before Member 3 creates the endpoint.
             - Effect: Allow
               Action: sagemaker:InvokeEndpoint
               Resource: !Sub arn:${AWS::Partition}:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/*
+            # Rekognition — face crop emotion detection (PROTOCOLS.md §3.2)
+            - Effect: Allow
+              Action: rekognition:DetectFaces
+              Resource: "*"
             # Bedrock — C3: < 1 RPS enforced in code via DDB token bucket
             - Effect: Allow
               Action: bedrock:InvokeModel

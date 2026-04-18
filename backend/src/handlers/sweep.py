@@ -84,8 +84,9 @@ def _process_session(session_id: str, sort_key: str, connection_id: str,
         return  # already flushed (race)
 
     apigw_event = _make_apigw_event(domain, stage)
+    emotion = str(sess.get("lastEmotion", "CALM"))
     context = recent_captions(session_id, limit=3)
-    text, used_fallback = safe_interpret(tokens, context, emotion="CALM")
+    text, used_fallback = safe_interpret(tokens, context, emotion=emotion)
     try:
         store_caption(session_id, text)
     except Exception:
@@ -96,7 +97,7 @@ def _process_session(session_id: str, sort_key: str, connection_id: str,
     ssml_url: str | None = None
     try:
         prosody = get_prosody_map()
-        ssml = build_ssml(text, emotion="CALM", prosody_map=prosody)
+        ssml = build_ssml(text, emotion=emotion, prosody_map=prosody)
         voice = default_voice(prosody)
         ssml_url = safe_synthesize(ssml, voice, session_id)
     except Exception:
@@ -107,7 +108,7 @@ def _process_session(session_id: str, sort_key: str, connection_id: str,
         "sessionId": session_id,
         "roomId": room_id,
         "timestamp": _iso_now(),
-        "payload": {"text": text, "ssmlUrl": ssml_url, "emotion": "CALM", "rawGlossFallback": used_fallback},
+        "payload": {"text": text, "ssmlUrl": ssml_url, "emotion": emotion, "rawGlossFallback": used_fallback},
     })
     post_to_connection(apigw_event, connection_id, {
         "type": "SIGNAL",

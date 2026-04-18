@@ -45,15 +45,27 @@ def _iso_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 
 
-def append_gloss(session_id: str, tokens: list[str], connection_id: str, room_id: str) -> dict:
-    """Append tokens to the STATE record, stamp firstTokenAt if new."""
+def append_gloss(
+    session_id: str,
+    tokens: list[str],
+    connection_id: str,
+    room_id: str,
+    emotion: str = "CALM",
+) -> dict:
+    """Append tokens to the STATE record, stamp firstTokenAt if new.
+
+    emotion is written with if_not_exists so it is initialised on first call
+    but never overwritten between Rekognition detections — update_emotion()
+    is the authoritative writer.
+    """
     now_ms = _now_ms()
     resp = _table().update_item(
         Key={"sessionId": session_id, "sk": STATE_SK},
         UpdateExpression=(
             "SET lastTokenAt = :now, "
             "firstTokenAt = if_not_exists(firstTokenAt, :now), "
-            "connectionId = :cid, roomId = :rid, lastEmotion = :emo, "
+            "connectionId = :cid, roomId = :rid, "
+            "lastEmotion = if_not_exists(lastEmotion, :emo), "
             "#ttl = :ttl, "
             "glossBuffer = list_append(if_not_exists(glossBuffer, :empty), :tok)"
         ),
@@ -62,7 +74,7 @@ def append_gloss(session_id: str, tokens: list[str], connection_id: str, room_id
             ":now": Decimal(now_ms),
             ":cid": connection_id,
             ":rid": room_id,
-            ":emo": "CALM",
+            ":emo": emotion,
             ":ttl": Decimal(int(time.time()) + TTL_SECONDS),
             ":empty": [],
             ":tok": tokens,
@@ -70,6 +82,15 @@ def append_gloss(session_id: str, tokens: list[str], connection_id: str, room_id
         ReturnValues="ALL_NEW",
     )
     return resp["Attributes"]
+
+
+def update_emotion(session_id: str, emotion: str) -> None:
+    """Overwrite lastEmotion on the STATE record after a Rekognition detection."""
+    _table().update_item(
+        Key={"sessionId": session_id, "sk": STATE_SK},
+        UpdateExpression="SET lastEmotion = :emo",
+        ExpressionAttributeValues={":emo": emotion},
+    )
 
 
 def drain_buffer(session_id: str, sort_key: str = STATE_SK) -> list[str] | None:

@@ -23,12 +23,17 @@ def test_infer_parses_minimal():
     assert m.payload.keypoints.leftHand == []
 
 
-def test_face_crop_field_is_discarded():
-    # C1: faceCropBase64 must be ignored — InferPayload has extra=ignore.
+def test_face_crop_field_parsed():
+    # faceCropBase64 is now modeled for Rekognition (PROTOCOLS.md §3.2).
     raw = _valid_msg()
-    raw["payload"]["faceCropBase64"] = "should-be-ignored"
+    raw["payload"]["faceCropBase64"] = "base64data"
     m = InferMessage.model_validate(raw)
-    assert not hasattr(m.payload, "faceCropBase64")
+    assert m.payload.faceCropBase64 == "base64data"
+
+
+def test_face_crop_field_optional():
+    m = InferMessage.model_validate(_valid_msg())
+    assert m.payload.faceCropBase64 is None
 
 
 def test_landmark_range_enforced():
