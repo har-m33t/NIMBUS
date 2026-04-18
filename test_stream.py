@@ -25,6 +25,9 @@ from typing import Any
 import boto3
 import cv2
 import mediapipe as mp
+from mediapipe.python.solutions import drawing_styles as _mp_styles
+from mediapipe.python.solutions import drawing_utils as _mp_draw
+from mediapipe.python.solutions import holistic as _mp_holistic
 import numpy as np
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -43,6 +46,7 @@ DEFAULT_BUFFER_FRAMES = 15        # flush after this many frames
 # Signal quality thresholds (ms) — from PROTOCOLS.md
 LATENCY_GREEN  = 800
 LATENCY_YELLOW = 1500
+CONFIDENCE_THRESHOLD = 0.60
 
 # Overlay colours (BGR)
 COLOR_GREEN  = (0, 200, 60)
@@ -174,7 +178,7 @@ def draw_overlay(
         cv2.putText(frame, gloss, (12, h - banner_h + 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, COLOR_WHITE, 2, cv2.LINE_AA)
         cv2.putText(frame, f"conf {conf_pct}", (12, h - banner_h + 62),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_GREEN if confidence >= 0.6 else COLOR_GRAY,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_GREEN if confidence >= CONFIDENCE_THRESHOLD else COLOR_GRAY,
                     1, cv2.LINE_AA)
 
     # Top-right: latency + FPS
@@ -201,10 +205,6 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
 
     try:
         sm = _sm_runtime()
-        mp_holistic = mp.solutions.holistic
-        mp_draw = mp.solutions.drawing_utils
-        mp_styles = mp.solutions.drawing_styles
-
         frame_buffer: deque[np.ndarray] = deque(maxlen=buffer_frames)
         last_tokens: list[str] = []
         last_confidence = 0.0
@@ -217,7 +217,7 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
         logger.info("Streaming to endpoint: %s  |  buffer=%d frames  |  Q to quit",
                     endpoint_name, buffer_frames)
 
-        with mp_holistic.Holistic(
+        with _mp_holistic.Holistic(
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         ) as holistic:
@@ -257,22 +257,22 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
                         frame_buffer.clear()
 
                     # Draw landmarks on the display frame
-                    mp_draw.draw_landmarks(
+                    _mp_draw.draw_landmarks(
                         bgr, results.left_hand_landmarks,
-                        mp_holistic.HAND_CONNECTIONS,
-                        mp_styles.get_default_hand_landmarks_style(),
-                        mp_styles.get_default_hand_connections_style(),
+                        _mp_holistic.HAND_CONNECTIONS,
+                        _mp_styles.get_default_hand_landmarks_style(),
+                        _mp_styles.get_default_hand_connections_style(),
                     )
-                    mp_draw.draw_landmarks(
+                    _mp_draw.draw_landmarks(
                         bgr, results.right_hand_landmarks,
-                        mp_holistic.HAND_CONNECTIONS,
-                        mp_styles.get_default_hand_landmarks_style(),
-                        mp_styles.get_default_hand_connections_style(),
+                        _mp_holistic.HAND_CONNECTIONS,
+                        _mp_styles.get_default_hand_landmarks_style(),
+                        _mp_styles.get_default_hand_connections_style(),
                     )
-                    mp_draw.draw_landmarks(
+                    _mp_draw.draw_landmarks(
                         bgr, results.pose_landmarks,
-                        mp_holistic.POSE_CONNECTIONS,
-                        mp_styles.get_default_pose_landmarks_style(),
+                        _mp_holistic.POSE_CONNECTIONS,
+                        _mp_styles.get_default_pose_landmarks_style(),
                     )
 
                 draw_overlay(bgr, last_tokens, last_confidence,
