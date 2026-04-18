@@ -139,10 +139,19 @@ def _draw_landmarks(frame: np.ndarray, hand_result, pose_result) -> None:
 # ---------------------------------------------------------------------------
 
 def _hand_coords_from_result(hand_result, label: str) -> list[float]:
-    if not hand_result or not hand_result.hand_landmarks:
+    if not hand_result or not hand_result.hand_landmarks or not hand_result.handedness:
         return [0.0] * 63
     for i, lms in enumerate(hand_result.hand_landmarks):
-        if hand_result.handedness and hand_result.handedness[i][0].category_name == label:
+        if i >= len(hand_result.handedness):
+            continue
+        item = hand_result.handedness[i]
+        if hasattr(item, "category_name"):
+            cat = item.category_name
+        elif isinstance(item, list) and item:
+            cat = item[0].category_name
+        else:
+            continue
+        if cat == label:
             return [c for lm in lms for c in (lm.x, lm.y, lm.z)]
     return [0.0] * 63
 
@@ -153,9 +162,13 @@ def extract_keypoints(hand_result, pose_result) -> np.ndarray:
     right = _hand_coords_from_result(hand_result, "Right")
 
     pose = [0.0] * 132
-    if pose_result and pose_result.pose_landmarks:
+    if pose_result and pose_result.pose_landmarks and len(pose_result.pose_landmarks) > 0:
         lms = pose_result.pose_landmarks[0]
-        pose = [c for lm in lms for c in (lm.x, lm.y, lm.z, lm.visibility)]
+        pose_data: list[float] = []
+        for lm in lms:
+            pose_data.extend([lm.x, lm.y, lm.z,
+                               lm.visibility if hasattr(lm, "visibility") else 0.0])
+        pose = pose_data[:132]
 
     return np.array(left + right + pose, dtype=np.float32)
 
@@ -172,12 +185,12 @@ def invoke_endpoint(
     client,
     endpoint_name: str,
     frame_buffer: np.ndarray,
-) -> tuple[list[str] | None, float, str | None]:
+) -> tuple[list[str] | None, float, str | None, float]:
     """
     Send frame_buffer (T, 258) to the endpoint.
 
     Returns:
-        (tokens, confidence, error_message)
+        (tokens, confidence, error_message, latency_ms)
         tokens is None and error_message is set on transient failures.
     """
     flat = frame_buffer.flatten().tolist()
@@ -191,20 +204,20 @@ def invoke_endpoint(
             Accept="application/json",
             Body=body,
         )
-        latency_ms = (time.monotonic() - t0) * 1000  # noqa: F841  (used by caller via outer t0)
+        latency_ms = (time.monotonic() - t0) * 1000
         result = json.loads(resp["Body"].read())
         tokens = result.get("tokens") or []
         confidence = float(result.get("confidence", 0.0))
-        return tokens, confidence, None
+        return tokens, confidence, None, latency_ms
 
     except client.exceptions.ModelError as exc:
-        return None, 0.0, f"Model error: {exc}"
+        return None, 0.0, f"Model error: {exc}", 0.0
     except Exception as exc:
         code = type(exc).__name__
         if code in RETRYABLE_CODES:
-            return None, 0.0, f"Endpoint busy — retrying ({code})"
+            return None, 0.0, f"Endpoint busy — retrying ({code})", 0.0
         logger.error("Unexpected SageMaker error: %s", exc, exc_info=True)
-        return None, 0.0, f"Error: {exc}"
+        return None, 0.0, f"Error: {exc}", 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +322,7 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
 
                 now = time.monotonic()
                 fps_ts.append(now)
-                display_fps = (len(fps_ts) / (fps_ts[-1] - fps_ts[0] + 1e-6)
+                display_fps = (len(fps_ts) / (fps_ts[-1] - fps_ts[0])
                                if len(fps_ts) > 1 else 0.0)
 
                 if now >= next_capture:
@@ -326,9 +339,7 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
 
                     if len(frame_buffer) == buffer_frames:
                         buf_array = np.stack(list(frame_buffer))  # (T, 258)
-                        t0 = time.monotonic()
-                        tokens, conf, err = invoke_endpoint(sm, endpoint_name, buf_array)
-                        last_latency_ms = (time.monotonic() - t0) * 1000
+                        tokens, conf, err, last_latency_ms = invoke_endpoint(sm, endpoint_name, buf_array)
                         if err:
                             last_error = err
                         else:
