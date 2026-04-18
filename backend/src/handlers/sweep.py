@@ -19,7 +19,7 @@ import boto3
 from common.emit import post_to_connection
 from common.logger import logger
 from common.metrics import MetricUnit, metrics
-from common.session import drain_buffer, get_session, recent_captions
+from common.session import drain_buffer, get_session, recent_captions, store_caption
 from common.ssml import build_ssml, default_voice, get_prosody_map
 from services.bedrock_interpreter import safe_interpret
 from services.polly_tts import safe_synthesize
@@ -38,12 +38,12 @@ def _get_table():
 
 
 def _scan_active_sessions() -> list[dict]:
-    """Return all session items that have a non-empty glossBuffer."""
+    """Return all STATE items that have a non-empty glossBuffer."""
     resp = _get_table().scan(
         FilterExpression="attribute_exists(glossBuffer) AND size(glossBuffer) > :zero",
         ExpressionAttributeValues={":zero": 0},
-        ProjectionExpression="sessionId, #ts, connectionId, roomId, domainName, #st, lastTokenAt",
-        ExpressionAttributeNames={"#ts": "timestamp", "#st": "stage"},
+        ProjectionExpression="sessionId, sk, connectionId, roomId, domainName, #st, lastTokenAt",
+        ExpressionAttributeNames={"#st": "stage"},
     )
     return resp.get("Items", [])
 
@@ -86,6 +86,10 @@ def _process_session(session_id: str, sort_key: str, connection_id: str,
     apigw_event = _make_apigw_event(domain, stage)
     context = recent_captions(session_id, limit=3)
     text, used_fallback = safe_interpret(tokens, context, emotion="CALM")
+    try:
+        store_caption(session_id, text)
+    except Exception:
+        logger.exception("sweep: store_caption failed; context history may be incomplete")
     if used_fallback:
         metrics.add_metric(name="BedrockFallbacks", unit=MetricUnit.Count, value=1)
 
@@ -133,7 +137,7 @@ def handler(event: dict, _context: Any) -> dict:
         for item in sessions:
             _process_session(
                 session_id=item.get("sessionId", ""),
-                sort_key=item.get("timestamp", ""),
+                sort_key=item.get("sk", "STATE"),
                 connection_id=item.get("connectionId", ""),
                 room_id=item.get("roomId", ""),
                 domain=item.get("domainName", ""),

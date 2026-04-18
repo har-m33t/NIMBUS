@@ -367,6 +367,9 @@ Resources:
       Handler: handlers.process_frame.handler
       MemorySize: 1024
       Description: "INFER route: SageMaker → Bedrock → Polly → CAPTION + SIGNAL"
+      Environment:
+        Variables:
+          BROADCAST_CAPTION_ARN: !GetAtt BroadcastCaptionFunction.Arn
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref SessionsTable
@@ -374,6 +377,8 @@ Resources:
             BucketName: !Ref TTSAudioBucket
         - S3ReadPolicy:
             BucketName: !Ref ConfigBucket
+        - LambdaInvokePolicy:
+            FunctionName: !Ref BroadcastCaptionFunction
         - Statement:
             # SageMaker inference — C1: NO rekognition:* permissions anywhere.
             # Wildcard used so deploy succeeds before Member 3 creates the endpoint.

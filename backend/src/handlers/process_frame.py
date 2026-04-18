@@ -15,9 +15,12 @@ Out of scope until later:
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any
 
+import boto3
+from botocore.config import Config
 from pydantic import ValidationError
 
 from common.emit import post_to_connection
@@ -25,7 +28,7 @@ from common.errors import SageMakerError
 from common.logger import bind_session, logger
 from common.metrics import MetricUnit, metrics
 from common.schemas import InferMessage
-from common.session import append_gloss, drain_buffer, recent_captions
+from common.session import append_gloss, drain_buffer, recent_captions, store_caption
 from common.ssml import build_ssml, default_voice, get_prosody_map
 from services import sagemaker_inference
 from services.bedrock_interpreter import safe_interpret
@@ -34,6 +37,31 @@ from services.polly_tts import safe_synthesize
 FACE_CROP_INTERVAL = 10   # mirrors PROTOCOLS.md §3.2 cadence
 BUFFER_TOKEN_LIMIT = 15   # PROTOCOLS.md §2.2 rule 1
 ELAPSED_LIMIT_MS = 3000   # PROTOCOLS.md §2.2 rule 2 (3s since firstTokenAt)
+
+_BROADCAST_ARN = os.environ.get("BROADCAST_CAPTION_ARN", "")
+_lambda_cfg = Config(retries={"max_attempts": 1, "mode": "standard"})
+_lambda_client = None
+
+
+def _get_lambda_client():
+    global _lambda_client
+    if _lambda_client is None:
+        _lambda_client = boto3.client("lambda", config=_lambda_cfg)
+    return _lambda_client
+
+
+def _invoke_broadcast(room_id: str, caption: dict) -> None:
+    """Fan-out caption to all room connections via Member 1's BroadcastCaption Lambda."""
+    if not _BROADCAST_ARN or not room_id:
+        return
+    try:
+        _get_lambda_client().invoke(
+            FunctionName=_BROADCAST_ARN,
+            InvocationType="Event",  # async — don't block the INFER response
+            Payload=json.dumps({"roomId": room_id, "caption": caption}).encode(),
+        )
+    except Exception:
+        logger.exception("broadcast_caption invoke failed; caption still delivered to sender")
 
 
 def _iso_now() -> str:
@@ -87,8 +115,9 @@ def _emit_caption(
     text: str,
     ssml_url: str | None,
     used_fallback: bool,
-) -> None:
-    post_to_connection(event, conn_id, {
+) -> dict:
+    """Send CAPTION to sender and return the caption dict for room broadcast."""
+    caption = {
         "type": "CAPTION",
         "sessionId": session_id,
         "roomId": room_id,
@@ -99,12 +128,13 @@ def _emit_caption(
             "emotion": "CALM",
             "rawGlossFallback": used_fallback,
         },
-    })
-    # Handoff to Member 1's NIMBUS_PROD_BroadcastCaption (PROTOCOLS.md §1.2)
+    }
+    post_to_connection(event, conn_id, caption)
     _emit_signal(event, conn_id, session_id, room_id, "NEW_CAPTION", {
         "text": text,
         "ssmlUrl": ssml_url,
     })
+    return caption
 
 
 def _should_flush(buf_attrs: dict, new_tokens: list[str]) -> bool:
@@ -125,11 +155,10 @@ def _flush_and_caption(
     conn_id: str,
     session_id: str,
     room_id: str,
-    sort_key: str,
 ) -> None:
-    """Drain the buffer and emit CAPTION + NEW_CAPTION SIGNAL. Phase 2+3+5."""
+    """Drain the STATE buffer and emit CAPTION + NEW_CAPTION SIGNAL. Phase 2+3+5."""
     flush_start = time.perf_counter()
-    tokens = drain_buffer(session_id, sort_key)
+    tokens = drain_buffer(session_id)
     if not tokens:
         return  # already flushed by another invocation (race)
 
@@ -160,7 +189,13 @@ def _flush_and_caption(
         logger.exception("ssml/polly step failed; delivering caption without audio")
         metrics.add_metric(name="PollyFailures", unit=MetricUnit.Count, value=1)
 
-    _emit_caption(event, conn_id, session_id, room_id, text, ssml_url, used_fallback)
+    try:
+        store_caption(session_id, text)
+    except Exception:
+        logger.exception("store_caption failed; Bedrock context history may be incomplete")
+
+    caption = _emit_caption(event, conn_id, session_id, room_id, text, ssml_url, used_fallback)
+    _invoke_broadcast(room_id, caption)
     metrics.add_metric(name="CaptionsEmitted", unit=MetricUnit.Count, value=1)
     flush_ms = (time.perf_counter() - flush_start) * 1000
     metrics.add_metric(name="FlushLatencyMs", unit=MetricUnit.Milliseconds, value=flush_ms)
@@ -234,11 +269,10 @@ def handler(event: dict, _context: Any) -> dict:
     if tokens:
         try:
             buf_attrs = append_gloss(msg.sessionId, tokens, connection_id, msg.roomId)
-            sort_key = buf_attrs.get("timestamp", "")
             buf_size = len(buf_attrs.get("glossBuffer", []))
             logger.info("gloss appended", extra={"bufferSize": buf_size})
             if _should_flush(buf_attrs, tokens):
-                _flush_and_caption(event, connection_id, msg.sessionId, msg.roomId, sort_key)
+                _flush_and_caption(event, connection_id, msg.sessionId, msg.roomId)
         except Exception:
             logger.exception("session buffer / flush failed")
 
