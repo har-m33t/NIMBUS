@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "defaultVoiceId": "Matthew",
+  "mappings": {
+    "HAPPY":     { "pitch": "+15%", "rate": "110%", "volume": "loud" },
+    "SAD":       { "pitch": "-10%", "rate": "85%",  "volume": "soft" },
+    "ANGRY":     { "pitch": "+20%", "rate": "120%", "volume": "x-loud" },
+    "CALM":      { "pitch": "+0%",  "rate": "95%",  "volume": "medium" },
+    "SURPRISED": { "pitch": "+25%", "rate": "115%", "volume": "loud" },
+    "FEAR":      { "pitch": "+10%", "rate": "130%", "volume": "soft" },
+    "DISGUSTED": { "pitch": "-5%",  "rate": "90%",  "volume": "medium" },
+    "CONFUSED":  { "pitch": "+5%",  "rate": "95%",  "volume": "medium" }
+  }
+}
