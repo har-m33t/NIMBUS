@@ -86,7 +86,10 @@ def input_fn(request_body: str | bytes, content_type: str) -> np.ndarray:
     if content_type != "application/json":
         raise ValueError(f"Unsupported content_type: {content_type!r}; expected application/json")
 
-    body = json.loads(request_body if isinstance(request_body, str) else request_body.decode())
+    try:
+        body = json.loads(request_body if isinstance(request_body, str) else request_body.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"Malformed JSON in request body: {exc}") from exc
     instances = body.get("instances", [])
     if not instances:
         raise ValueError("Request body missing 'instances' key or empty list")
@@ -177,7 +180,5 @@ def output_fn(
     confidence = prediction["confidence"]
     tokens = prediction["tokens"] if confidence >= CONFIDENCE_THRESHOLD else None
 
-    body = json.dumps(
-        {"predictions": [{"tokens": tokens, "confidence": confidence}]}
-    )
+    body = json.dumps({"tokens": tokens, "confidence": confidence})
     return body, "application/json"
