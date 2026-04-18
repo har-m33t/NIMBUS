@@ -31,29 +31,49 @@ Parameters:
     Default: anthropic.claude-3-haiku-20240307-v1:0
     Description: Bedrock foundation model ID for gloss→English interpretation.
 
+  DeployMediasoupEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set true to deploy mediasoup EC2 resources; keep false for backend-only deploys.
+
   MediasoupVpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC in which to launch the mediasoup SFU EC2 instance.
+    Type: String
+    Default: ""
+    Description: VPC in which to launch the mediasoup SFU EC2 instance. Leave blank to skip EC2 deployment.
   MediasoupSubnetId:
-    Type: AWS::EC2::Subnet::Id
+    Type: String
+    Default: ""
     Description: Public subnet for the mediasoup SFU (needs IGW route).
   MediasoupKeyPairName:
-    Type: AWS::EC2::KeyPair::KeyName
+    Type: String
+    Default: ""
     Description: Existing EC2 key pair used for SSH to the mediasoup instance.
   MediasoupAdminSshCidr:
     Type: String
     Default: 0.0.0.0/32
     Description: CIDR allowed to SSH to the SFU (tighten before production).
   MediasoupAmiSsmParameter:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Type: String
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-    Description: SSM parameter resolving to the latest Amazon Linux 2023 AMI.
+    Description: SSM parameter path resolving to the latest Amazon Linux 2023 AMI.
   MediasoupAnnouncedIp:
     Type: String
     Default: ""
     Description: |
       Public IP mediasoup advertises in ICE candidates. Leave blank on first
       deploy; update to the Elastic IP after the stack is created.
+
+Conditions:
+  MediasoupExplicitlyEnabled: !Equals [!Ref DeployMediasoupEnabled, "true"]
+  HasMediasoupVpcId: !Not [!Equals [!Ref MediasoupVpcId, ""]]
+  HasMediasoupSubnetId: !Not [!Equals [!Ref MediasoupSubnetId, ""]]
+  HasMediasoupKeyPairName: !Not [!Equals [!Ref MediasoupKeyPairName, ""]]
+  DeployMediasoup: !And
+    - !Condition MediasoupExplicitlyEnabled
+    - !Condition HasMediasoupVpcId
+    - !Condition HasMediasoupSubnetId
+    - !Condition HasMediasoupKeyPairName
 
 Globals:
   Function:
@@ -133,14 +153,14 @@ Resources:
     Properties:
       ApiId: !Ref WebSocketApi
       IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsConnectFunction.Arn}/invocations
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WSConnectFunction.Arn}/invocations
 
   DisconnectIntegration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:
       ApiId: !Ref WebSocketApi
       IntegrationType: AWS_PROXY
-      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsDisconnectFunction.Arn}/invocations
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WSDisconnectFunction.Arn}/invocations
 
   ProcessFrameIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -226,6 +246,7 @@ Resources:
 
   MediasoupEC2Role:
     Type: AWS::IAM::Role
+    Condition: DeployMediasoup
     Properties:
       RoleName: NIMBUS_PROD_MediasoupEC2Role
       AssumeRolePolicyDocument:
@@ -270,6 +291,7 @@ Resources:
 
   MediasoupInstanceProfile:
     Type: AWS::IAM::InstanceProfile
+    Condition: DeployMediasoup
     Properties:
       InstanceProfileName: NIMBUS_PROD_MediasoupInstanceProfile
       Roles:
@@ -277,7 +299,7 @@ Resources:
 
   # ── Lambda Functions (Member 1 — signaling) ─────────────────────────────────
 
-  WsConnectFunction:
+  WSConnectFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: NIMBUS_PROD_WS_Connect
@@ -286,15 +308,15 @@ Resources:
       MemorySize: 128
       Description: WebSocket $connect — registers connection (writes sk=STATE + CONN# index).
 
-  WsConnectPermission:
+  WSConnectPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref WsConnectFunction
+      FunctionName: !Ref WSConnectFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*
 
-  WsDisconnectFunction:
+  WSDisconnectFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: NIMBUS_PROD_WS_Disconnect
@@ -303,10 +325,10 @@ Resources:
       MemorySize: 128
       Description: WebSocket $disconnect — clears sk=STATE + CONN# index.
 
-  WsDisconnectPermission:
+  WSDisconnectPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref WsDisconnectFunction
+      FunctionName: !Ref WSDisconnectFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*
@@ -467,16 +489,8 @@ Resources:
 
   # ── CloudWatch Log Groups (PROTOCOLS §5.7, 14-day retention) ────────────────
 
-  WsConnectLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: /aws/lambda/NIMBUS_PROD_WS_Connect
-      RetentionInDays: 14
-  WsDisconnectLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: /aws/lambda/NIMBUS_PROD_WS_Disconnect
-      RetentionInDays: 14
+  # Connect/disconnect log groups are pre-existing in deployed environments.
+  # Managing them here can trigger existence-check failures during stack updates.
   JoinRoomLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -500,7 +514,8 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: NIMBUS_PROD_Sessions
+      # Intentionally omit TableName so CloudFormation can replace this table
+      # during key-schema migrations without failing on custom-name constraints.
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
@@ -663,9 +678,10 @@ Resources:
 
   MediasoupSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: DeployMediasoup
     Properties:
       GroupName: NIMBUS_PROD_MediasoupSG
-      GroupDescription: NIMBUS mediasoup SFU — WSS + WebRTC media
+      GroupDescription: NIMBUS mediasoup SFU - WSS + WebRTC media
       VpcId: !Ref MediasoupVpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -686,6 +702,7 @@ Resources:
 
   MediasoupEIP:
     Type: AWS::EC2::EIP
+    Condition: DeployMediasoup
     Properties:
       Domain: vpc
       Tags:
@@ -694,9 +711,10 @@ Resources:
 
   MediasoupInstance:
     Type: AWS::EC2::Instance
+    Condition: DeployMediasoup
     Properties:
       InstanceType: c5.xlarge
-      ImageId: !Ref MediasoupAmiSsmParameter
+      ImageId: !Sub "{{resolve:ssm:${MediasoupAmiSsmParameter}}}"
       KeyName: !Ref MediasoupKeyPairName
       SubnetId: !Ref MediasoupSubnetId
       SecurityGroupIds:
@@ -778,12 +796,14 @@ Resources:
 
   MediasoupEIPAssociation:
     Type: AWS::EC2::EIPAssociation
+    Condition: DeployMediasoup
     Properties:
       AllocationId: !GetAtt MediasoupEIP.AllocationId
       InstanceId: !Ref MediasoupInstance
 
   MediasoupLogGroup:
     Type: AWS::Logs::LogGroup
+    Condition: DeployMediasoup
     Properties:
       LogGroupName: /ec2/nimbus-prod/mediasoup
       RetentionInDays: 14
@@ -858,5 +878,6 @@ Outputs:
     Value: !GetAtt BroadcastCaptionFunction.Arn
 
   MediasoupPublicIp:
+    Condition: DeployMediasoup
     Description: Mediasoup SFU Elastic IP (announce this to browser clients).
     Value: !Ref MediasoupEIP
