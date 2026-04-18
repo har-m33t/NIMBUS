@@ -11,6 +11,8 @@ Usage:
 
 Press Q to quit.
 Requires: SAGEMAKER_ROLE_ARN in environment (for assumed-role credential chain).
+
+Model files (~30 MB total) are downloaded automatically on first run to .mediapipe_models/.
 """
 from __future__ import annotations
 
@@ -19,23 +21,18 @@ import json
 import logging
 import os
 import time
+import urllib.request
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 import boto3
 import cv2
 import mediapipe as mp
+from mediapipe.tasks import python as _mp_tasks
+from mediapipe.tasks.python import vision as _mp_vision
+from mediapipe.tasks.python.core.base_options import BaseOptions
 import numpy as np
-
-try:
-    _mp_holistic = mp.solutions.holistic
-    _mp_draw = mp.solutions.drawing_utils
-    _mp_styles = mp.solutions.drawing_styles
-except AttributeError as _e:
-    raise ImportError(
-        "mediapipe.solutions not available — Holistic was removed in mediapipe>=0.10.18.\n"
-        "Install the last compatible release:  pip install 'mediapipe==0.10.9'"
-    ) from _e
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -71,33 +68,96 @@ RETRYABLE_CODES = {
     "ModelError",
 }
 
+# ---------------------------------------------------------------------------
+# MediaPipe Tasks model bootstrap
+# ---------------------------------------------------------------------------
+
+_MODEL_DIR = Path(__file__).parent / ".mediapipe_models"
+_HAND_MODEL = _MODEL_DIR / "hand_landmarker.task"
+_POSE_MODEL = _MODEL_DIR / "pose_landmarker_full.task"
+_HAND_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+)
+_POSE_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"
+)
+
+
+def _ensure_models() -> None:
+    _MODEL_DIR.mkdir(exist_ok=True)
+    for path, url in ((_HAND_MODEL, _HAND_MODEL_URL), (_POSE_MODEL, _POSE_MODEL_URL)):
+        if not path.exists():
+            logger.info("Downloading %s (~30 MB) ...", path.name)
+            urllib.request.urlretrieve(url, path)
+            logger.info("Saved %s", path)
+
+
+# ---------------------------------------------------------------------------
+# Landmark drawing — manual OpenCV (mp.solutions.drawing_utils removed in 0.10.18+)
+# ---------------------------------------------------------------------------
+
+_HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (0, 9), (9, 10), (10, 11), (11, 12),
+    (0, 13), (13, 14), (14, 15), (15, 16),
+    (0, 17), (17, 18), (18, 19), (19, 20),
+    (5, 9), (9, 13), (13, 17),
+]
+
+_POSE_CONNECTIONS = [
+    (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+    (11, 23), (12, 24), (23, 24),
+]
+
+
+def _draw_landmarks(frame: np.ndarray, hand_result, pose_result) -> None:
+    h, w = frame.shape[:2]
+
+    if hand_result and hand_result.hand_landmarks:
+        for lms in hand_result.hand_landmarks:
+            pts = [(int(lm.x * w), int(lm.y * h)) for lm in lms]
+            for a, b in _HAND_CONNECTIONS:
+                cv2.line(frame, pts[a], pts[b], COLOR_GREEN, 1, cv2.LINE_AA)
+            for cx, cy in pts:
+                cv2.circle(frame, (cx, cy), 4, COLOR_GREEN, -1)
+
+    if pose_result and pose_result.pose_landmarks:
+        lms = pose_result.pose_landmarks[0]
+        pts = [(int(lm.x * w), int(lm.y * h)) for lm in lms]
+        for a, b in _POSE_CONNECTIONS:
+            if a < len(pts) and b < len(pts):
+                cv2.line(frame, pts[a], pts[b], COLOR_YELLOW, 1, cv2.LINE_AA)
+        for cx, cy in pts[11:25]:
+            cv2.circle(frame, (cx, cy), 3, COLOR_YELLOW, -1)
+
 
 # ---------------------------------------------------------------------------
 # Keypoint extraction — 258-feature flat vector per frame
 # ---------------------------------------------------------------------------
 
-def _hand_coords(hand_landmarks) -> list[float]:
-    """21 landmarks × (x, y, z) = 63 floats. Zero-padded if absent."""
-    if hand_landmarks is None:
+def _hand_coords_from_result(hand_result, label: str) -> list[float]:
+    if not hand_result or not hand_result.hand_landmarks:
         return [0.0] * 63
-    return [c for lm in hand_landmarks.landmark for c in (lm.x, lm.y, lm.z)]
+    for i, lms in enumerate(hand_result.hand_landmarks):
+        if hand_result.handedness and hand_result.handedness[i][0].category_name == label:
+            return [c for lm in lms for c in (lm.x, lm.y, lm.z)]
+    return [0.0] * 63
 
 
-def _pose_coords(pose_landmarks) -> list[float]:
-    """33 landmarks × (x, y, z, visibility) = 132 floats. Zero-padded if absent."""
-    if pose_landmarks is None:
-        return [0.0] * 132
-    return [c for lm in pose_landmarks.landmark for c in (lm.x, lm.y, lm.z, lm.visibility)]
+def extract_keypoints(hand_result, pose_result) -> np.ndarray:
+    """Return float32 array of shape (258,) from Tasks API landmarker results."""
+    left  = _hand_coords_from_result(hand_result, "Left")
+    right = _hand_coords_from_result(hand_result, "Right")
 
+    pose = [0.0] * 132
+    if pose_result and pose_result.pose_landmarks:
+        lms = pose_result.pose_landmarks[0]
+        pose = [c for lm in lms for c in (lm.x, lm.y, lm.z, lm.visibility)]
 
-def extract_keypoints(results) -> np.ndarray:
-    """Return float32 array of shape (258,) from a MediaPipe Holistic result."""
-    vec = (
-        _hand_coords(results.left_hand_landmarks)
-        + _hand_coords(results.right_hand_landmarks)
-        + _pose_coords(results.pose_landmarks)
-    )
-    return np.array(vec, dtype=np.float32)
+    return np.array(left + right + pose, dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +191,7 @@ def invoke_endpoint(
             Accept="application/json",
             Body=body,
         )
-        latency_ms = (time.monotonic() - t0) * 1000
+        latency_ms = (time.monotonic() - t0) * 1000  # noqa: F841  (used by caller via outer t0)
         result = json.loads(resp["Body"].read())
         tokens = result.get("tokens") or []
         confidence = float(result.get("confidence", 0.0))
@@ -170,7 +230,6 @@ def draw_overlay(
     """Mutates frame in-place with prediction overlay."""
     h, w = frame.shape[:2]
 
-    # Semi-transparent dark banner at bottom
     banner_h = 80
     overlay = frame.copy()
     cv2.rectangle(overlay, (0, h - banner_h), (w, h), COLOR_BLACK, -1)
@@ -185,18 +244,16 @@ def draw_overlay(
         cv2.putText(frame, gloss, (12, h - banner_h + 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, COLOR_WHITE, 2, cv2.LINE_AA)
         cv2.putText(frame, f"conf {conf_pct}", (12, h - banner_h + 62),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_GREEN if confidence >= CONFIDENCE_THRESHOLD else COLOR_GRAY,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                    COLOR_GREEN if confidence >= CONFIDENCE_THRESHOLD else COLOR_GRAY,
                     1, cv2.LINE_AA)
 
-    # Top-right: latency + FPS
     lat_color = _latency_color(latency_ms) if latency_ms > 0 else COLOR_GRAY
     lat_str = f"{latency_ms:.0f} ms" if latency_ms > 0 else "-- ms"
     cv2.putText(frame, lat_str, (w - 120, 28),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, lat_color, 2, cv2.LINE_AA)
     cv2.putText(frame, f"{fps:.1f} fps", (w - 110, 54),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_GRAY, 1, cv2.LINE_AA)
-
-    # Press Q hint
     cv2.putText(frame, "Q  quit", (12, 26),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_GRAY, 1, cv2.LINE_AA)
 
@@ -206,6 +263,24 @@ def draw_overlay(
 # ---------------------------------------------------------------------------
 
 def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
+    _ensure_models()
+
+    hand_opts = _mp_vision.HandLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(_HAND_MODEL)),
+        running_mode=_mp_vision.RunningMode.IMAGE,
+        num_hands=2,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_score=0.5,
+        min_tracking_confidence=0.5,
+    )
+    pose_opts = _mp_vision.PoseLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(_POSE_MODEL)),
+        running_mode=_mp_vision.RunningMode.IMAGE,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_score=0.5,
+        min_tracking_confidence=0.5,
+    )
+
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open camera {camera_index}")
@@ -224,10 +299,8 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
         logger.info("Streaming to endpoint: %s  |  buffer=%d frames  |  Q to quit",
                     endpoint_name, buffer_frames)
 
-        with _mp_holistic.Holistic(
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-        ) as holistic:
+        with (_mp_vision.HandLandmarker.create_from_options(hand_opts) as hand_lmk,
+              _mp_vision.PoseLandmarker.create_from_options(pose_opts) as pose_lmk):
             while True:
                 ret, bgr = cap.read()
                 if not ret:
@@ -236,18 +309,19 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
 
                 now = time.monotonic()
                 fps_ts.append(now)
-                display_fps = len(fps_ts) / (fps_ts[-1] - fps_ts[0] + 1e-6) if len(fps_ts) > 1 else 0.0
+                display_fps = (len(fps_ts) / (fps_ts[-1] - fps_ts[0] + 1e-6)
+                               if len(fps_ts) > 1 else 0.0)
 
-                # Only process + send at TARGET_FPS
                 if now >= next_capture:
                     next_capture = now + FRAME_INTERVAL_S
 
                     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                    rgb.flags.writeable = False
-                    results = holistic.process(rgb)
-                    rgb.flags.writeable = True
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-                    kp = extract_keypoints(results)
+                    hand_result = hand_lmk.detect(mp_image)
+                    pose_result = pose_lmk.detect(mp_image)
+
+                    kp = extract_keypoints(hand_result, pose_result)
                     frame_buffer.append(kp)
 
                     if len(frame_buffer) == buffer_frames:
@@ -263,24 +337,7 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
                             last_confidence = conf
                         frame_buffer.clear()
 
-                    # Draw landmarks on the display frame
-                    _mp_draw.draw_landmarks(
-                        bgr, results.left_hand_landmarks,
-                        _mp_holistic.HAND_CONNECTIONS,
-                        _mp_styles.get_default_hand_landmarks_style(),
-                        _mp_styles.get_default_hand_connections_style(),
-                    )
-                    _mp_draw.draw_landmarks(
-                        bgr, results.right_hand_landmarks,
-                        _mp_holistic.HAND_CONNECTIONS,
-                        _mp_styles.get_default_hand_landmarks_style(),
-                        _mp_styles.get_default_hand_connections_style(),
-                    )
-                    _mp_draw.draw_landmarks(
-                        bgr, results.pose_landmarks,
-                        _mp_holistic.POSE_CONNECTIONS,
-                        _mp_styles.get_default_pose_landmarks_style(),
-                    )
+                    _draw_landmarks(bgr, hand_result, pose_result)
 
                 draw_overlay(bgr, last_tokens, last_confidence,
                              last_latency_ms, display_fps, last_error)
@@ -307,7 +364,6 @@ def main() -> None:
                         help=f"SageMaker endpoint name (default {ENDPOINT_NAME})")
     args = parser.parse_args()
 
-    # Validate SAGEMAKER_ROLE_ARN is present so the error surfaces clearly
     role_arn = os.environ.get("SAGEMAKER_ROLE_ARN")
     if not role_arn:
         raise EnvironmentError(
