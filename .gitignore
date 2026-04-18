@@ -1,0 +1,9 @@
+.claude/
+claude.local.md
+.env
+.env.local
+*.md
+*.pyc
+*.pth
+*.task
+
