@@ -17,7 +17,12 @@
 
 ## 1. WebSocket Message Schema
 
-All messages traverse a single AWS API Gateway WebSocket channel. Every payload MUST be valid JSON and MUST include the `sessionId` field.
+The system uses **two independent WebSocket connections** from the browser:
+
+1. **API Gateway WebSocket** — Carries all AI pipeline data: `INFER` requests (keypoints), and backend responses (`GLOSS`, `EMOTION`, `CAPTION`, `ERROR`). Also carries room lifecycle signals (`JOIN_ROOM`, `LEAVE_ROOM`, `NEW_CAPTION`, `ENDPOINT_WARMING`).
+2. **Mediasoup WSS** (port 443 on EC2) — Carries WebRTC signaling only: `SDP_OFFER`, `SDP_ANSWER`, `ICE_CANDIDATE`. These go directly between the browser and the mediasoup SFU and do **not** traverse API Gateway or Lambda.
+
+All API Gateway payloads MUST be valid JSON and MUST include the `sessionId` field.
 
 ### 1.1 — Client → Backend (Inference Request)
 
@@ -60,7 +65,7 @@ Sent by the browser client at the agreed keypoint frequency (see §3.1).
 | `keypoints.pose` | `array[33]` | ✅ | 33 MediaPipe pose landmarks, normalized 0.0–1.0 |
 | `includeFaceCrop` | `boolean` | ✅ | Set `true` once every 10 frames (see §3.2) |
 
-> **Coordinate System:** All `x`, `y`, `z` values MUST be MediaPipe **normalized** floats in the range `[0.0, 1.0]`. Absolute pixel values are prohibited.
+> **Coordinate System:** All `x`, `y` values MUST be MediaPipe **normalized** floats in the range `[0.0, 1.0]`. `z` values are relative depth and may be negative (see §3.3). Absolute pixel values are prohibited.
 
 ---
 
@@ -118,7 +123,7 @@ Emitted after Bedrock completes sentence interpretation. This is the final outpu
   "payload": {
     "text": "I am going to the store.",
     "emotion": "HAPPY",
-    "audioUrl": "s3://nimbus-prod-tts-audio/<sessionId>/<uuid>.mp3",
+    "audioUrl": "https://nimbus-prod-tts-audio.s3.amazonaws.com/<sessionId>/<uuid>.mp3?X-Amz-...",
     "latencyMs": 340
   }
 }
@@ -145,14 +150,16 @@ Emitted on any service failure (see §4 for fallback values).
 ```json
 {
   "type": "SIGNAL",
-  "event": "JOIN_ROOM | LEAVE_ROOM | ICE_CANDIDATE | SDP_OFFER | SDP_ANSWER | NEW_CAPTION",
+  "event": "JOIN_ROOM | LEAVE_ROOM | NEW_CAPTION | ENDPOINT_WARMING",
   "sessionId": "<uuid-v4>",
   "roomId": "<room-id>",
   "payload": {}
 }
 ```
 
-Allowed `event` values: `JOIN_ROOM | LEAVE_ROOM | ICE_CANDIDATE | SDP_OFFER | SDP_ANSWER | NEW_CAPTION`
+Allowed `event` values on **API Gateway channel**: `JOIN_ROOM | LEAVE_ROOM | NEW_CAPTION | ENDPOINT_WARMING`
+
+> **WebRTC signaling events** (`SDP_OFFER`, `SDP_ANSWER`, `ICE_CANDIDATE`) are exchanged directly over the **mediasoup WSS connection** and do NOT flow through API Gateway. See §5.6.
 
 ---
 
@@ -166,30 +173,34 @@ DynamoDB table: `NIMBUS_PROD_Sessions`
 
 ```
 PK: sessionId (string)
-SK: timestamp (ISO-8601)
+SK: "STATE"              — fixed value for the live session record
 Attributes:
   roomId          (string)
   glossBuffer     (list<string>)  — rolling window of raw tokens
   lastEmotion     (string)        — most recently detected emotion label
-  lastCaptionAt   (timestamp)     — when Bedrock last flushed a sentence
+  lastCaptionAt   (string)        — ISO-8601 timestamp of last Bedrock flush
   connectionId    (string)        — API Gateway WebSocket connection ID
+  createdAt       (string)        — ISO-8601 timestamp of session creation
   ttl             (number)        — Unix epoch, session auto-expires after 4 hours
 ```
 
+Caption history is stored as additional items with `SK: "CAPTION#<timestamp>"` to support the context window query in §2.3.
+
 ### 2.2 — Gloss Buffer & Sentence Boundary
 
-Bedrock is NOT called on every keypoint frame. The Lambda accumulates gloss tokens in `glossBuffer` in DynamoDB and flushes only when a sentence boundary is detected.
+Bedrock is NOT called on every keypoint frame. Sentence boundary detection runs **client-side in the browser** to minimize latency and avoid unnecessary AWS round-trips. The browser accumulates gloss tokens in a local buffer and flushes a complete utterance to the backend only when a boundary is detected.
 
 **Sentence Boundary Rules (in priority order):**
 
-| Rule | Trigger | Action |
-|---|---|---|
-| **Token Count** | Buffer reaches **15 tokens** | Force-flush to Bedrock |
-| **Time Window** | **3 seconds** elapsed since first token in buffer | Flush to Bedrock |
-| **Pause Signal** | No new `INFER` messages for **1.5 seconds** | Flush to Bedrock |
-| **Explicit Boundary Token** | SageMaker emits `[EOS]` token | Flush immediately |
+| Rule | Tier | Trigger | Action |
+|---|---|---|---|
+| **Temporal Pause** | 1 (Primary) | No new sign keypoints above activity threshold for **800ms** | Flush buffer to backend |
+| **Token Count Ceiling** | 2 (Safety) | Buffer accumulates **8 or more** gloss tokens without a pause | Force-flush to backend |
+| **ASL Grammatical Marker** | 3 (Enhancement) | MediaPipe face mesh detects sustained head nod, raised eyebrows held >3 frames, or return-to-neutral hand position | Flush immediately |
 
-The Lambda passes the **full buffer contents + last detected emotion** to Bedrock as context in a single prompt invocation.
+> **Tier 3** requires additional training data to tune reliably and is flagged as a **Phase 4 enhancement**. Tiers 1 and 2 are the committed implementation.
+
+Once flushed, the backend Lambda receives the complete token buffer, stores it in `glossBuffer` in DynamoDB, and passes the **full buffer contents + last detected emotion** to Bedrock as context in a single prompt invocation.
 
 ### 2.3 — Context Window for Bedrock
 
@@ -310,6 +321,29 @@ All AWS resources MUST follow the `NIMBUS_PROD_` prefix. No resource may be crea
 | `NIMBUS_PROD_Rooms` | Active room state: tracks which `connectionId`s belong to each `roomId` for broadcast fan-out |
 | `NIMBUS_PROD_UserPreferences` | Per-user preferences (voice selection, caption display settings, UI layout) |
 
+#### `NIMBUS_PROD_Rooms` Schema
+
+```
+PK: roomId (string)
+SK: connectionId (string)
+Attributes:
+  sessionId       (string)        — the user's session
+  joinedAt        (string)        — ISO-8601 timestamp
+  ttl             (number)        — Unix epoch, auto-expires after 4 hours (matches session TTL)
+```
+
+#### `NIMBUS_PROD_UserPreferences` Schema
+
+```
+PK: userId (string)              — stable user identifier (future auth integration)
+Attributes:
+  preferredVoiceId (string)       — Polly voice ID (default: "Matthew")
+  captionFontSize  (string)       — "small" | "medium" | "large"
+  captionPosition  (string)       — "bottom" | "top"
+  uiTheme          (string)       — "light" | "dark"
+  ttl              (number)       — Unix epoch, optional expiry
+```
+
 ### 5.4 — SageMaker
 
 | Resource | Name |
@@ -401,8 +435,8 @@ The Lambda builds the final SSML string using the map above:
 
 | Component | Owner | Input Contract | Output Contract |
 |---|---|---|---|
-| **Mediasoup SFU (EC2)** | Member 1 (Infrastructure) | Browser clients connect via WebRTC (`getUserMedia` MediaStream) | Multi-party video/audio relay to all room participants |
-| **WebSocket Signaling** | Member 1 (Infrastructure) | Client connects with `sessionId` + `roomId` | Routes `JOIN_ROOM`, `LEAVE_ROOM`, `ICE_CANDIDATE`, `SDP_OFFER`, `SDP_ANSWER`, `NEW_CAPTION` signal events |
+| **Mediasoup SFU (EC2)** | Member 1 (Infrastructure) | Browser clients connect via WebRTC (`getUserMedia` MediaStream). SDP/ICE signaling over mediasoup WSS. | Multi-party video/audio relay to all room participants |
+| **API Gateway WebSocket Signaling** | Member 1 (Infrastructure) | Client connects with `sessionId` + `roomId` | Routes `JOIN_ROOM`, `LEAVE_ROOM`, `NEW_CAPTION`, `ENDPOINT_WARMING` signal events |
 | **Caption Broadcast** | Member 1 (Infrastructure) | Final `CAPTION` payload from AI pipeline + `roomId` | Broadcasts caption text to all `connectionId`s in the room via API Gateway Management API |
 | **DynamoDB Room Management** | Member 1 (Infrastructure) | `JOIN_ROOM` / `LEAVE_ROOM` signals | Maintains `NIMBUS_PROD_Rooms` table mapping `roomId` → active `connectionId`s |
 | **AI Orchestration** | Member 2 (Backend) | `INFER` payload with keypoints + optional face crop | `GLOSS`, `EMOTION`, `CAPTION`, `ERROR` events back to client |
