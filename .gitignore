@@ -1,3 +1,28 @@
+# SAM build artifacts
+backend/.aws-sam/
+backend/samconfig.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment
+.env
+*.env.local
+
+# macOS
+.DS_Store
+
+# Claude Code (per-user local settings; don't check in)
+.claude/settings.local.json
+
 .claude/
 claude.local.md
 .env
@@ -6,4 +31,3 @@ claude.local.md
 *.pyc
 *.pth
 *.task
-
