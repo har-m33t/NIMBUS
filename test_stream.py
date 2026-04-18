@@ -68,6 +68,14 @@ RETRYABLE_CODES = {
     "ModelError",
 }
 
+# Permanent misconfiguration — logged once, not retried with traceback spam
+TERMINAL_CODES = {
+    "ValidationError",           # endpoint not found / bad request
+    "AccessDeniedException",     # IAM
+    "ResourceNotFoundException",
+}
+_logged_terminal: set[str] = set()
+
 # ---------------------------------------------------------------------------
 # MediaPipe Tasks model bootstrap
 # ---------------------------------------------------------------------------
@@ -216,8 +224,15 @@ def invoke_endpoint(
         code = type(exc).__name__
         if code in RETRYABLE_CODES:
             return None, 0.0, f"Endpoint busy — retrying ({code})", 0.0
-        logger.error("Unexpected SageMaker error: %s", exc, exc_info=True)
-        return None, 0.0, f"Error: {exc}", 0.0
+        if code in TERMINAL_CODES:
+            if code not in _logged_terminal:
+                _logged_terminal.add(code)
+                logger.warning("SageMaker %s (suppressing further tracebacks): %s", code, exc)
+            return None, 0.0, f"{code}: endpoint unavailable", 0.0
+        if code not in _logged_terminal:
+            _logged_terminal.add(code)
+            logger.error("Unexpected SageMaker error: %s", exc, exc_info=True)
+        return None, 0.0, f"Error: {code}", 0.0
 
 
 # ---------------------------------------------------------------------------
