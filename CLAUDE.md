@@ -1,7 +1,12 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
+## Branch protection (enforced)
+NEVER commit or push directly to main.
+NEVER run git push origin main.
+All work happens on feature branches inside worktrees.
+The only way to merge to main is via an explicit human-approved
+git merge command after all agents have passed.
 ## Source of Truth
 
 **`PROTOCOLS.md` is the canonical specification for this project.** Read it before writing any code. It defines all WebSocket message schemas, session lifecycle, boundary conditions, error fallbacks, and responsibility contracts between components. Any deviation requires explicit justification.
