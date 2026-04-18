@@ -20,6 +20,7 @@ import logging
 import os
 import time
 from collections import deque
+from typing import Any
 
 import boto3
 import cv2
@@ -92,7 +93,7 @@ def extract_keypoints(results) -> np.ndarray:
 # SageMaker invocation
 # ---------------------------------------------------------------------------
 
-def _sm_runtime() -> boto3.client:
+def _sm_runtime() -> Any:
     return boto3.client("sagemaker-runtime", region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
 
