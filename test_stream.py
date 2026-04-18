@@ -270,14 +270,14 @@ def run(camera_index: int, buffer_frames: int, endpoint_name: str) -> None:
         running_mode=_mp_vision.RunningMode.IMAGE,
         num_hands=2,
         min_hand_detection_confidence=0.5,
-        min_hand_presence_score=0.5,
+        min_hand_presence_confidence=0.5,
         min_tracking_confidence=0.5,
     )
     pose_opts = _mp_vision.PoseLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=str(_POSE_MODEL)),
         running_mode=_mp_vision.RunningMode.IMAGE,
         min_pose_detection_confidence=0.5,
-        min_pose_presence_score=0.5,
+        min_pose_presence_confidence=0.5,
         min_tracking_confidence=0.5,
     )
 
