@@ -94,7 +94,7 @@ export function useMediaPipeTracking({
         landmarkersRef.current = lm;
         loop();
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = err instanceof Error ? err.message : (typeof err === 'string' ? err : 'Failed to load MediaPipe models');
         setState((s) => ({ ...s, error: msg, isTracking: false }));
       }
     }
