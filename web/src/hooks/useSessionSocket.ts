@@ -22,7 +22,10 @@ export type InboundSignal =
   | { type: "SIGNAL"; event: "SDP_OFFER"; sessionId: string; roomId: string; payload: SdpIceFromRelay }
   | { type: "SIGNAL"; event: "SDP_ANSWER"; sessionId: string; roomId: string; payload: SdpIceFromRelay }
   | { type: "SIGNAL"; event: "ICE_CANDIDATE"; sessionId: string; roomId: string; payload: SdpIceFromRelay }
-  | { type: "ERROR"; payload: { code: string; message?: string } };
+  | { type: "GLOSS"; sessionId: string; timestamp: string; sequenceNumber: number; payload: { tokens: string[]; confidence: number } }
+  | { type: "EMOTION"; sessionId: string; timestamp: string; payload: { emotion: string; confidence: number; allEmotions: Record<string, number> } }
+  | { type: "CAPTION"; sessionId: string; timestamp: string; sequenceNumber: number; roomId: string; payload: { text: string; ssmlUrl?: string; emotion: string; rawGlossFallback: boolean } }
+  | { type: "ERROR"; payload: { code: string; message?: string; glossFallback?: string } };
 
 export type SocketStatus = "idle" | "connecting" | "open" | "closed" | "error";
 

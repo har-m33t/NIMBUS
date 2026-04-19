@@ -7,18 +7,17 @@ Aligned with: PROTOCOLS.md (canonical spec) and CLAUDE.md
 
 HACKATHON CONSTRAINTS (BINDING — OVERRIDE ANY CONFLICTING DETAIL IN PROTOCOLS.md)
 ---------------------------------------------------------------------------------
-C1  NO emotion detection. Amazon Rekognition is NOT used in this build.
-    - `includeFaceCrop` is accepted in the INFER payload but the face crop
-      bytes MUST be discarded immediately on receipt; they are never persisted,
-      logged, or sent to any AWS service.
-    - Emotion is hard-coded to `"CALM"` everywhere PROTOCOLS.md references it
-      (EMOTION events, CAPTION.payload.emotion, Bedrock prompt context,
-      SSML prosody lookup). An EMOTION event is still emitted as `"CALM"` with
-      confidence 1.0 so the client contract is preserved.
-    - SSML map still loaded; only the CALM row is ever selected.
+C1  Emotion detection IS enabled using Amazon Rekognition DetectFaces.
+    - Face crops are accepted only on the defined cadence from INFER payload
+      (`includeFaceCrop` true, typically every 10th frame) and used only for
+      emotion inference.
+    - Face bytes are never persisted to DynamoDB or S3.
+    - Emotion outputs are emitted via EMOTION events and used as context for
+      Bedrock interpretation and SSML prosody selection.
 C2  No personal, biometric, health, financial, political, religious, genetic,
     racial/ethnic, union, payment, regulated, or malicious data may enter AWS.
-    - Face crops are biometric → discarded (see C1).
+    - Face crops are processed transiently for emotion classification only and
+      are discarded immediately after Rekognition returns.
     - Keypoints (normalized floats) are not biometric identifiers and are allowed.
     - Session recording / export is OFF for this hackathon.
     - No user-provided free-text beyond gloss tokens is forwarded to Bedrock.
@@ -66,7 +65,7 @@ PHASE 0 — AWS + REPO FOUNDATIONS (Day 1)
      - Request Bedrock access: `anthropic.claude-haiku-4-5` (primary),
        `anthropic.claude-sonnet-4-6` (quality compare, §3.6)
      - AWS Budget: $50/mo dev, alert at 50/80/100%
-     - DO NOT request Rekognition access (C1).
+     - Request Rekognition access for DetectFaces in deployment region.
      - Create SAM artifact bucket with Block Public Access ON:
          `nimbus-prod-sam-artifacts-<accountid>`
 
@@ -110,9 +109,9 @@ PHASE 1 — INFER INGRESS & SESSION STATE (Days 2–3)
             - keypoints.leftHand, rightHand arrays (may be empty per §3.3)
             - pose array length 33 or empty
             - sequenceNumber monotonic per session (warn if regressed)
-       2. If `includeFaceCrop: true`: IGNORE faceCropBase64 field entirely.
-          Do not read it, do not decode it, do not log its length beyond a
-          counter metric `FaceCropsDiscarded`.
+     2. If `includeFaceCrop: true` and `faceCropBase64` is present:
+       decode to bytes and run Rekognition emotion detection in-memory.
+       Do not persist raw face bytes.
        3. Fetch session state from `NIMBUS_PROD_Sessions` (PK sessionId,
           latest SK by descending timestamp).
 
@@ -133,12 +132,13 @@ PHASE 1 — INFER INGRESS & SESSION STATE (Days 2–3)
      tokens[], confidence. Write to `NIMBUS_PROD_Sessions.glossBuffer`
      (UpdateItem ADD to list).
 
-1.4  Emit EMOTION event = CALM always (C1)
-     One EMOTION event per N frames (e.g., every 10 frames, matching the
-     old face-crop cadence) to preserve client UX contract:
-       { type: "EMOTION", payload: { emotion: "CALM", confidence: 1.0,
-         allEmotions: { CALM: 1.0 } } }
-     DynamoDB `lastEmotion` is fixed to "CALM".
+1.4  Emit EMOTION event from Rekognition output
+     On face-crop cadence frames, call `rekognition.detect_faces` and map
+     dominant emotion + confidence to EMOTION payload:
+       { type: "EMOTION", payload: { emotion: "HAPPY|...", confidence: n,
+         allEmotions: {...} } }
+     On missing/invalid face crop or Rekognition failure, fallback to CALM
+     (confidence 1.0) to preserve contract and availability.
 
 ================================================================================
 PHASE 2 — GLOSS BUFFER & SENTENCE BOUNDARY (Days 3–4)
@@ -239,21 +239,23 @@ PHASE 3 — BEDROCK INTERPRETER (Days 4–6)
      one if quality delta is small. Doc in PRs.
 
 ================================================================================
-PHASE 4 — REKOGNITION (DISABLED — STUB ONLY)
+PHASE 4 — REKOGNITION EMOTION PIPELINE (ACTIVE)
 ================================================================================
 
-Per C1, emotion detection is disabled. services/rekognition_emotion.py
-contains a stub:
+4.1  Service: services/rekognition_emotion.py
+  - Client: `boto3.client("rekognition")`
+  - API: `detect_faces(Image={"Bytes": ...}, Attributes=["EMOTIONS"])`
+  - Input: face crop JPEG bytes from INFER payload on cadence frames.
 
-    def detect(_face_jpeg_bytes=None) -> Emotion:
-        # Hackathon policy C1: no Rekognition, no biometric processing.
-        return Emotion(label="CALM", confidence=1.0, source="disabled")
+4.2  Output mapping
+  - Select dominant Rekognition emotion and normalize confidence to 0..1.
+  - Emit full `allEmotions` map for UI/supporting analytics.
+  - Persist current label as `lastEmotion` in session state for caption
+    context and prosody lookup.
 
-No IAM permission for Rekognition is granted on the Lambda role. No face
-bytes ever reach AWS. If PROTOCOLS.md is later relaxed, re-enable by:
-  - granting rekognition:DetectFaces on LambdaExecutionRole
-  - restoring detect() body
-  - wiring face bytes from INFER.faceCropBase64
+4.3  Fallback
+  - On no face, decode failure, timeout, or Rekognition exception:
+    fallback to CALM and continue pipeline (no hard failure).
 
 ================================================================================
 PHASE 5 — POLLY TTS (Days 6–8)
@@ -269,7 +271,8 @@ PHASE 5 — POLLY TTS (Days 6–8)
        <speak><prosody pitch="{pitch}" rate="{rate}" volume="{volume}">
          {escaped_text}
        </prosody></speak>
-     Always looks up CALM row (C1). Text XML-escaped (& < > ' ").
+    Looks up row by detected emotion; falls back to CALM if unmapped.
+    Text XML-escaped (& < > ' ").
      Max text length: 200 chars; split on "." if longer; concatenate mp3s.
 
 5.3  S3 artifact bucket — `nimbus-prod-tts-audio` (PROTOCOLS.md §5.1)
@@ -349,14 +352,14 @@ PHASE 6 — OBSERVABILITY (Days 8–9)
      - PipelineLatencyMs (per stage + total)
      - BedrockInvocations, BedrockRateLimited, BedrockTokensIn/Out
      - PollyCharactersSynthesized, PollyFailures
-     - FaceCropsDiscarded (C1 audit metric)
+    - RekognitionLatencyMs, RekognitionFailures, EmotionEventsEmitted
      - GlossBufferFlushes by reason (tokenCount|time|pause|EOS)
      - CaptionsEmitted
 
 6.3  Alarms
      - p95 end-to-end > 1500 ms for 5 min (matches "Poor" threshold)
      - Bedrock error rate > 10% for 5 min
-     - Any FaceCrop decoded (should be 0; counter-alarm on misconfiguration)
+    - Rekognition failure rate > 10% for 5 min
      - Lambda throttles > 0
 
 ================================================================================
@@ -364,25 +367,25 @@ PHASE 7 — TESTING (Days 9–11)
 ================================================================================
 
 7.1  Unit (pytest + moto)
-     - Schema validation: valid INFER, missing fields, face crop IS discarded.
+  - Schema validation: valid INFER, missing fields, face crop parsing.
      - bedrock_interpreter: mock converse (happy path, JSON retry, circuit
        breaker, rate-limit deferral).
      - rate_limit: concurrent invokes honor 1 RPS ceiling (use moto DDB).
-     - polly_tts: SSML correctness with CALM row; XML escape edge cases.
-     - ssml builder: golden test for CALM only.
+  - rekognition_emotion: dominant emotion mapping, fallback-to-CALM paths.
+  - polly_tts: SSML correctness for emotion rows + fallback; XML escape edge cases.
+  - ssml builder: golden tests for multiple emotions.
      - Boundary detector: each of rules a-d triggers exactly once.
 
 7.2  Integration (dev AWS account)
-     - Simulate WS INFER sequence; assert GLOSS, EMOTION=CALM, CAPTION.
+  - Simulate WS INFER sequence; assert GLOSS, EMOTION, CAPTION.
      - Assert nimbus-prod-tts-audio rejects anonymous GET (S3 HeadBucket /
        GetObject from unauthenticated client returns 403).
      - Assert Bedrock call rate never exceeds 1 RPS under a 5 RPS INFER load.
 
 7.3  Compliance audit (C2 / C4)
-     - grep: no `faceCrop` bytes read in any code path reachable from
-       lambda_handler.
-     - IAM policy lint: no rekognition:* granted; only bedrock:InvokeModel
-       on specific model ARN.
+     - Verify face bytes are not persisted to DynamoDB/S3/logs.
+     - IAM policy lint: allow only `rekognition:DetectFaces` (no wildcard).
+     - bedrock:InvokeModel scoped to intended model ARN.
      - S3 PublicAccessBlock verified via
        `aws s3api get-public-access-block --bucket nimbus-prod-tts-audio`
        — all four flags = true.
@@ -405,6 +408,7 @@ PHASE 8 — DEPLOYMENT (Day 12)
        and LifecycleConfig (see §5.3).
      - Bucket policy on the above (§5.3).
      - AWS::IAM::ManagedPolicy for `NIMBUS_PROD_LambdaExecutionRole`:
+         rekognition:DetectFaces on *
          bedrock:InvokeModel on
            arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5
          polly:SynthesizeSpeech (*)
@@ -414,7 +418,7 @@ PHASE 8 — DEPLOYMENT (Day 12)
            NIMBUS_PROD_Sessions
          sagemaker:InvokeEndpoint on nimbus-prod-asl-endpoint
          logs:* on own log group
-       NO rekognition:*. NO s3:*Acl. NO s3:PutBucketPublicAccessBlock
+       NO s3:*Acl. NO s3:PutBucketPublicAccessBlock
        (immutable after creation).
      - samconfig.toml (profile=nimbus-dev, region=us-east-1, stack-name
        nimbus-prod-member2)
@@ -426,14 +430,12 @@ PHASE 8 — DEPLOYMENT (Day 12)
 DEVIATIONS FROM PROTOCOLS.md (require PR to PROTOCOLS.md per footer rule)
 ================================================================================
 
-D1  Emotion detection removed. EMOTION events emit "CALM" / 1.0 always.
-    Justification: hackathon policy C1/C2 (no biometric processing).
-D2  Bedrock rate limited to < 1 RPS globally, with deferral + raw-gloss
+D1  Bedrock rate limited to < 1 RPS globally, with deferral + raw-gloss
     fallback if boundary rule fires during exhaustion. Justification: C3.
-D3  CAPTION.audioUrl emitted as HTTPS presigned URL (not `s3://`).
+D2  CAPTION.audioUrl emitted as HTTPS presigned URL (not `s3://`).
     Justification: clients cannot fetch raw `s3://` URIs; presigned HTTPS
     with 300 s TTL is the only safe route given C4 bucket lockdown.
-D4  Session recording / `nimbus-prod-session-exports` NOT used.
+D3  Session recording / `nimbus-prod-session-exports` NOT used.
     Justification: C2 data-minimization.
 
 ================================================================================
@@ -458,7 +460,7 @@ MILESTONES
 ================================================================================
 
 M1  (end of week 1)  AWS profile + Bedrock access live; SAM stack deploys;
-                     INFER returns canned GLOSS + CALM EMOTION; S3 bucket
+                     INFER returns GLOSS + EMOTION pipeline events; S3 bucket
                      hardened and audited.
 M2  (end of week 2)  Bedrock + Polly end-to-end; rate limiter honors 1 RPS
                      under load test; CAPTION event includes presigned URL.
@@ -481,12 +483,12 @@ backend/src/common/ssml.py                  [new]  prosody loader + builder
 backend/src/handlers/process_frame.py       [update]  orchestrator + SWEEP
 backend/src/services/bedrock_interpreter.py [update]  converse + prompt + RL
 backend/src/services/polly_tts.py           [update]  SSML + S3 (hardened)
-backend/src/services/rekognition_emotion.py [stub]   returns CALM (C1)
+backend/src/services/rekognition_emotion.py [update] detect_faces + fallback
 backend/src/config/ssml_prosody_map.json    [verify] matches PROTOCOLS §6.2
 backend/tests/                              [new]    unit + compliance
 backend/template.yaml                       [update] Lambda, S3 (BPA), IAM
 backend/samconfig.toml                      [new]
-docs/API.md                                 [update] add D1–D4 deviations
+docs/API.md                                 [update] add D1–D3 deviations
 
 ================================================================================
 END OF PLAN
