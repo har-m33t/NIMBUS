@@ -3,3 +3,4 @@ aws-lambda-powertools>=2.30
 pydantic>=2.5
 tenacity>=8.2
 python-json-logger>=2.0
+PyJWT[crypto]>=2.8

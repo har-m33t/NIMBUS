@@ -34,8 +34,9 @@ class InferPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
     keypoints: Keypoints
     includeFaceCrop: bool = False
-    # faceCropBase64 intentionally NOT modeled — hackathon policy C1
-    # discards biometric data. Any value present is ignored by the handler.
+    # JPEG face crop, base64-encoded, max 640×480px (PROTOCOLS.md §3.2).
+    # Present only when includeFaceCrop=true, once per 10 frames.
+    faceCropBase64: str | None = None
 
 
 class InferMessage(BaseModel):

@@ -38,6 +38,11 @@ def handler(event, _context):
     session_id = (params.get("sessionId") or "").strip()
     room_id = (params.get("roomId") or "").strip()
 
+    # Extract authenticated user identity from Lambda authorizer context
+    authorizer = event.get("requestContext", {}).get("authorizer", {})
+    user_id = authorizer.get("userId", "anonymous")
+    display_name = authorizer.get("displayName", "")
+
     if not _valid_uuid(session_id):
         _log.warning("Rejecting connect — bad sessionId: %r", session_id)
         return bad_request("sessionId must be a UUID v4")
@@ -53,9 +58,10 @@ def handler(event, _context):
         return server_error("Failed to initialize session")
 
     _log.info(
-        "Connected sessionId=%s connectionId=%s roomId=%s",
+        "Connected sessionId=%s connectionId=%s roomId=%s userId=%s",
         session_id,
         connection_id,
         room_id or "(none)",
+        user_id,
     )
-    return ok({"sessionId": session_id, "connectionId": connection_id})
+    return ok({"sessionId": session_id, "connectionId": connection_id, "userId": user_id})

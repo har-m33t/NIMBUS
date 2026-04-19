@@ -47,7 +47,7 @@ def _event(seq: int = 1, include_face: bool = False) -> dict:
 def patched(monkeypatch):
     """Patch all AWS-touching names used by the handler (patch at use site)."""
     from handlers import process_frame
-    from services import sagemaker_inference
+    from services import sagemaker_inference, rekognition_emotion
 
     posts: list[dict] = []
     monkeypatch.setattr(process_frame, "post_to_connection",
@@ -57,7 +57,11 @@ def patched(monkeypatch):
     monkeypatch.setattr(sagemaker_inference, "is_in_service", lambda: True)
     monkeypatch.setattr(sagemaker_inference, "invoke",
                         lambda kp: {"tokens": ["STORE", "I", "GO"], "confidence": 0.87})
+    monkeypatch.setattr(rekognition_emotion, "detect_emotion",
+                        lambda b: ("CALM", 1.0, {"CALM": 1.0}))
+    monkeypatch.setattr(process_frame, "update_emotion", lambda sid, emo: None)
     process_frame._cold_start_checked.clear()
+    process_frame._session_emotion.clear()
     yield posts
 
 
@@ -71,14 +75,16 @@ def test_gloss_event_emitted_on_success(patched):
     assert gloss["payload"]["tokens"] == ["STORE", "I", "GO"]
 
 
-def test_emotion_calm_every_10th_frame(patched):
+def test_emotion_emitted_every_10th_frame(patched):
     from handlers.process_frame import handler
     handler(_event(seq=10), CTX)
     types = [p["payload"]["type"] for p in patched]
     assert "EMOTION" in types
     emo = next(p["payload"] for p in patched if p["payload"]["type"] == "EMOTION")
-    assert emo["payload"]["emotion"] == "CALM"
-    assert emo["payload"]["confidence"] == 1.0
+    assert emo["payload"]["emotion"] in {"CALM", "HAPPY", "SAD", "ANGRY",
+                                         "SURPRISED", "FEAR", "DISGUSTED", "CONFUSED"}
+    assert "confidence" in emo["payload"]
+    assert "allEmotions" in emo["payload"]
 
 
 def test_no_emotion_on_non_tenth_frame(patched):
@@ -88,12 +94,42 @@ def test_no_emotion_on_non_tenth_frame(patched):
     assert "EMOTION" not in types
 
 
-def test_face_crop_field_discarded_not_forwarded(patched, monkeypatch):
-    """C1: faceCropBase64 must never reach any AWS service."""
+def test_rekognition_called_with_face_crop(patched, monkeypatch):
+    """On a 10th frame with face crop, detect_emotion receives the decoded bytes."""
+    import base64
+    from services import rekognition_emotion
+
+    rek_calls = []
+    monkeypatch.setattr(rekognition_emotion, "detect_emotion",
+                        lambda b: rek_calls.append(b) or ("HAPPY", 0.93, {"HAPPY": 0.93}))
+
+    from handlers.process_frame import handler
+    handler(_event(seq=10, include_face=True), CTX)
+
+    assert rek_calls, "detect_emotion must be called on a face-crop 10th frame"
+    assert isinstance(rek_calls[0], bytes), "must pass decoded bytes to Rekognition"
+
+
+def test_rekognition_emotion_propagates_to_emotion_event(patched, monkeypatch):
+    """Detected emotion label appears in the EMOTION event payload."""
+    from services import rekognition_emotion
+
+    monkeypatch.setattr(rekognition_emotion, "detect_emotion",
+                        lambda b: ("HAPPY", 0.93, {"HAPPY": 0.93}))
+
+    from handlers.process_frame import handler
+    handler(_event(seq=10, include_face=True), CTX)
+
+    emo = next(p["payload"] for p in patched if p["payload"]["type"] == "EMOTION")
+    assert emo["payload"]["emotion"] == "HAPPY"
+    assert emo["payload"]["allEmotions"]["HAPPY"] == pytest.approx(0.93)
+
+
+def test_face_crop_never_reaches_sagemaker(patched, monkeypatch):
+    """face crop bytes must not be forwarded to SageMaker (C1 partial)."""
     from services import sagemaker_inference
     seen = {}
     def fake_invoke(kp):
-        # handler passes Keypoints object; make sure no face bytes leaked in
         assert not hasattr(kp, "faceCropBase64")
         seen["called"] = True
         return {"tokens": ["X"], "confidence": 0.5}

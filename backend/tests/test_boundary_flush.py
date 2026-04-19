@@ -34,13 +34,14 @@ def _event(seq: int = 1, tokens: list[str] | None = None) -> dict:
 
 @pytest.fixture
 def patched_base(monkeypatch):
-    """Minimal patches: sagemaker + post_to_connection + cold-start."""
+    """Minimal patches: sagemaker + post_to_connection + cold-start + no-op store_caption."""
     from handlers import process_frame
     from services import sagemaker_inference
 
     posts: list[dict] = []
     monkeypatch.setattr(process_frame, "post_to_connection",
                         lambda event, conn, payload: posts.append({"conn": conn, "payload": payload}) or True)
+    monkeypatch.setattr(process_frame, "store_caption", lambda sid, text: None)
     monkeypatch.setattr(sagemaker_inference, "is_in_service", lambda: True)
     process_frame._cold_start_checked.clear()
     return posts
@@ -51,10 +52,10 @@ def test_caption_emitted_on_15_token_boundary(monkeypatch, patched_base):
 
     # Fake append_gloss returning a 15-token buffer
     big_buf = ["TOK"] * 15
-    def fake_append(sid, tokens, cid, rid):
+    def fake_append(sid, tokens, cid, rid, emotion="CALM"):
         return {"glossBuffer": big_buf, "firstTokenAt": int(time.time() * 1000) - 100, "timestamp": "2026-04-18T12:00:00.000Z"}
     monkeypatch.setattr(process_frame, "append_gloss", fake_append)
-    monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk: big_buf)
+    monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk="STATE": big_buf)
     monkeypatch.setattr(process_frame, "recent_captions", lambda sid, limit=3: [])
     monkeypatch.setattr(process_frame, "safe_interpret", lambda tokens, ctx, emotion: ("I go store.", False))
     monkeypatch.setattr(process_frame, "get_prosody_map", lambda: {"mappings": {"CALM": {"pitch": "0%", "rate": "medium", "volume": "medium"}}, "defaultVoiceId": "Matthew"})
@@ -80,10 +81,10 @@ def test_caption_emitted_on_15_token_boundary(monkeypatch, patched_base):
 def test_caption_emitted_on_eos_token(monkeypatch, patched_base):
     from handlers import process_frame
 
-    def fake_append(sid, tokens, cid, rid):
+    def fake_append(sid, tokens, cid, rid, emotion="CALM"):
         return {"glossBuffer": tokens, "firstTokenAt": int(time.time() * 1000) - 100, "timestamp": "2026-04-18T12:00:00.000Z"}
     monkeypatch.setattr(process_frame, "append_gloss", fake_append)
-    monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk: ["HELLO", "[EOS]"])
+    monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk="STATE": ["HELLO", "[EOS]"])
     monkeypatch.setattr(process_frame, "recent_captions", lambda sid, limit=3: [])
     monkeypatch.setattr(process_frame, "safe_interpret", lambda tokens, ctx, emotion: ("Hello.", False))
     monkeypatch.setattr(process_frame, "get_prosody_map", lambda: {"mappings": {"CALM": {"pitch": "0%", "rate": "medium", "volume": "medium"}}, "defaultVoiceId": "Matthew"})
@@ -102,10 +103,10 @@ def test_caption_emitted_on_eos_token(monkeypatch, patched_base):
 def test_no_flush_below_limit(monkeypatch, patched_base):
     from handlers import process_frame
 
-    def fake_append(sid, tokens, cid, rid):
+    def fake_append(sid, tokens, cid, rid, emotion="CALM"):
         return {"glossBuffer": ["TOK"] * 3, "firstTokenAt": int(time.time() * 1000) - 100, "timestamp": "2026-04-18T12:00:00.000Z"}
     monkeypatch.setattr(process_frame, "append_gloss", fake_append)
-    monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk: None)
+    monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk="STATE": None)
     from services import sagemaker_inference
     monkeypatch.setattr(sagemaker_inference, "invoke", lambda kp: {"tokens": ["TOK"], "confidence": 0.9})
 
@@ -119,10 +120,10 @@ def test_new_caption_signal_emitted_with_caption(monkeypatch, patched_base):
     from handlers import process_frame
 
     big_buf = ["A"] * 15
-    def fake_append(sid, tokens, cid, rid):
+    def fake_append(sid, tokens, cid, rid, emotion="CALM"):
         return {"glossBuffer": big_buf, "firstTokenAt": int(time.time() * 1000) - 100, "timestamp": "2026-04-18T12:00:00.000Z"}
     monkeypatch.setattr(process_frame, "append_gloss", fake_append)
-    monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk: big_buf)
+    monkeypatch.setattr(process_frame, "drain_buffer", lambda sid, sk="STATE": big_buf)
     monkeypatch.setattr(process_frame, "recent_captions", lambda sid, limit=3: [])
     monkeypatch.setattr(process_frame, "safe_interpret", lambda tokens, ctx, emotion: ("A.", False))
     monkeypatch.setattr(process_frame, "get_prosody_map", lambda: {"mappings": {"CALM": {"pitch": "0%", "rate": "medium", "volume": "medium"}}, "defaultVoiceId": "Matthew"})
