@@ -23,6 +23,8 @@ export default function ParticipantsPanel({
   onToggle,
   onLeaveRoom,
   transcript,
+  pinnedId,
+  onPin,
 }: {
   roomId: string;
   participants: Participant[];
@@ -30,6 +32,8 @@ export default function ParticipantsPanel({
   onToggle: () => void;
   onLeaveRoom: () => void;
   transcript: TranscriptEntry[];
+  pinnedId: string | null;
+  onPin: (id: string) => void;
 }) {
   const [transcriptOpen, setTranscriptOpen] = useState(true);
   const [mobileTab, setMobileTab] = useState(2); // default to Transcript
@@ -145,6 +149,15 @@ export default function ParticipantsPanel({
                       <span className={`text-[10px] shrink-0 ${p.isSigning ? "text-nimbus-teal" : "text-nimbus-mist"}`}>
                         {p.isSigning ? "signing" : "viewing"}
                       </span>
+                      <button
+                        onClick={() => onPin(p.id)}
+                        title={pinnedId === p.id ? "Unpin" : "Pin to main view"}
+                        className={`p-1 rounded transition-colors shrink-0 ${pinnedId === p.id ? "text-nimbus-gold" : "text-nimbus-mist/40 hover:text-nimbus-mist"}`}
+                      >
+                        <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="M16 12V4h1a1 1 0 000-2H7a1 1 0 000 2h1v8l-2 2v2h4v4l1 1 1-1v-4h4v-2l-2-2z" />
+                        </svg>
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -201,6 +214,15 @@ export default function ParticipantsPanel({
                     <span className={`text-[10px] shrink-0 ${p.isSigning ? "text-nimbus-teal" : "text-nimbus-mist"}`}>
                       {p.isSigning ? "signing" : "viewing"}
                     </span>
+                    <button
+                      onClick={() => onPin(p.id)}
+                      title={pinnedId === p.id ? "Unpin" : "Pin to main view"}
+                      className={`p-1 rounded transition-colors shrink-0 ${pinnedId === p.id ? "text-nimbus-gold" : "text-nimbus-mist/40 hover:text-nimbus-mist"}`}
+                    >
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M16 12V4h1a1 1 0 000-2H7a1 1 0 000 2h1v8l-2 2v2h4v4l1 1 1-1v-4h4v-2l-2-2z" />
+                      </svg>
+                    </button>
                   </div>
                 ))}
               </div>

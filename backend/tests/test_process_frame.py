@@ -186,3 +186,99 @@ def test_non_infer_action_ignored(monkeypatch):
            "body": json.dumps({"action": "PING"})}
     resp = handler(evt, CTX)
     assert resp["statusCode"] == 200
+
+
+# ── Edge-inference (browser ONNX token) tests ──────────────────────────────
+
+
+def _edge_event(token: str, seq: int = 1) -> dict:
+    """Build an INFER event with a direct gloss token (no keypoints)."""
+    body = {
+        "action": "INFER",
+        "sessionId": "22222222-2222-4222-8222-222222222222",
+        "roomId": "room-edge",
+        "timestamp": "2026-04-19T12:00:00Z",
+        "sequenceNumber": seq,
+        "payload": {"token": token},
+    }
+    return {
+        "requestContext": {
+            "connectionId": "conn-edge",
+            "domainName": "example.execute-api.us-east-1.amazonaws.com",
+            "stage": "dev",
+            "routeKey": "INFER",
+        },
+        "body": json.dumps(body),
+    }
+
+
+@pytest.fixture
+def patched_edge(monkeypatch):
+    """Patch for edge-inference tests — SageMaker should never be called."""
+    from handlers import process_frame
+    from services import sagemaker_inference
+
+    posts: list[dict] = []
+    monkeypatch.setattr(process_frame, "post_to_connection",
+                        lambda event, conn, payload: posts.append({"conn": conn, "payload": payload}) or True)
+    monkeypatch.setattr(process_frame, "append_gloss",
+                        lambda *a, **kw: {"glossBuffer": ["WATER"]})
+
+    # SageMaker should NOT be called — make it explode if it is
+    def sagemaker_boom(_):
+        raise AssertionError("SageMaker must not be called in edge-inference mode")
+    monkeypatch.setattr(sagemaker_inference, "invoke", sagemaker_boom)
+    monkeypatch.setattr(sagemaker_inference, "is_in_service", lambda: (_ for _ in ()).throw(
+        AssertionError("is_in_service must not be called in edge-inference mode")))
+
+    process_frame._cold_start_checked.clear()
+    process_frame._session_emotion.clear()
+    yield posts
+
+
+def test_edge_token_emits_gloss(patched_edge):
+    """When payload.token is set, handler emits GLOSS with the token."""
+    from handlers.process_frame import handler
+    resp = handler(_edge_event("WATER"), CTX)
+    assert resp["statusCode"] == 200
+    types = [p["payload"]["type"] for p in patched_edge]
+    assert "GLOSS" in types
+    gloss = next(p["payload"] for p in patched_edge if p["payload"]["type"] == "GLOSS")
+    assert gloss["payload"]["tokens"] == ["WATER"]
+    assert gloss["payload"]["confidence"] == 1.0
+
+
+def test_edge_token_skips_sagemaker(patched_edge):
+    """Edge-inference mode must not invoke SageMaker at all."""
+    from handlers.process_frame import handler
+    # If SageMaker is called, the patched_edge fixture will raise AssertionError
+    resp = handler(_edge_event("HELLO"), CTX)
+    assert resp["statusCode"] == 200
+
+
+def test_edge_token_appends_to_gloss_buffer(patched_edge, monkeypatch):
+    """Edge token should be appended to the DDB gloss buffer."""
+    from handlers import process_frame
+
+    appended = []
+    monkeypatch.setattr(process_frame, "append_gloss",
+                        lambda sid, tokens, cid, rid, emotion="CALM": appended.append(tokens) or {"glossBuffer": tokens})
+
+    process_frame.handler(_edge_event("BOOK"), CTX)
+    assert appended, "append_gloss must be called"
+    assert appended[0] == ["BOOK"]
+
+
+def test_edge_token_schema_accepts_no_keypoints():
+    """InferMessage should validate when payload has token but no keypoints."""
+    from common.schemas import InferMessage
+    msg = InferMessage.model_validate({
+        "action": "INFER",
+        "sessionId": "s1",
+        "roomId": "r1",
+        "timestamp": "2026-04-19T12:00:00Z",
+        "sequenceNumber": 1,
+        "payload": {"token": "HELLO"},
+    })
+    assert msg.payload.token == "HELLO"
+    assert msg.payload.keypoints is None
