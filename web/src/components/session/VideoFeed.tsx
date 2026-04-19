@@ -4,10 +4,13 @@ export default function VideoFeed({
   stream = null,
   showOverlay = true,
   isTracking = false,
+  onInfer: _onInfer,
 }: {
   stream?: MediaStream | null;
   showOverlay?: boolean;
   isTracking?: boolean;
+  /** Called with each INFER payload when the MediaPipe worker produces keypoints. */
+  onInfer?: (payload: Record<string, unknown>) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
