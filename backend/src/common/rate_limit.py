@@ -2,9 +2,10 @@
 
 Hackathon policy C3: strictly < 1 RPS across the whole stack. The bucket
 lives on a single item on ``NIMBUS_PROD_Sessions`` keyed by
-``sessionId="bedrock_global"`` so we do not stand up another table.
+``sessionId="bedrock_global", sk="RATE_LIMIT"`` so we do not stand up
+another table.
 
-Algorithm: lazy refill — on each attempt, compute
+Algorithm: lazy refill - on each attempt, compute
 ``tokens = min(capacity, tokens + elapsed_s * refill_rate)`` and then
 atomically require ``tokens >= 1`` while subtracting 1.
 """
@@ -44,16 +45,15 @@ def try_acquire() -> bool:
     """Attempt to take one token. Returns True on success, False if empty."""
     t = _get_table()
     now_ms = _now_ms()
-    # Read current state; create on first use.
-    resp = t.get_item(Key={"sessionId": BUCKET_PK, "timestamp": SORT_KEY})
+    resp = t.get_item(Key={"sessionId": BUCKET_PK, "sk": SORT_KEY})
     item = resp.get("Item")
     if item is None:
         try:
             t.put_item(
                 Item={
                     "sessionId": BUCKET_PK,
-                    "timestamp": SORT_KEY,
-                    "tokens": Decimal("0"),  # start empty → forces 1s warmup
+                    "sk": SORT_KEY,
+                    "tokens": Decimal("0"),  # start empty -> forces 1s warmup
                     "lastRefillMs": Decimal(now_ms),
                 },
                 ConditionExpression="attribute_not_exists(sessionId)",
@@ -67,10 +67,9 @@ def try_acquire() -> bool:
     elapsed_s = max(0.0, (now_ms - last_ms) / 1000.0)
     refilled = min(CAPACITY, tokens + elapsed_s * REFILL_PER_SEC)
     if refilled < 1.0:
-        # Persist partial refill so next caller sees progress.
         try:
             t.update_item(
-                Key={"sessionId": BUCKET_PK, "timestamp": SORT_KEY},
+                Key={"sessionId": BUCKET_PK, "sk": SORT_KEY},
                 UpdateExpression="SET tokens = :t, lastRefillMs = :n",
                 ConditionExpression="lastRefillMs = :prev",
                 ExpressionAttributeValues={
@@ -85,7 +84,7 @@ def try_acquire() -> bool:
 
     try:
         t.update_item(
-            Key={"sessionId": BUCKET_PK, "timestamp": SORT_KEY},
+            Key={"sessionId": BUCKET_PK, "sk": SORT_KEY},
             UpdateExpression="SET tokens = :t, lastRefillMs = :n",
             ConditionExpression="lastRefillMs = :prev",
             ExpressionAttributeValues={
@@ -97,7 +96,7 @@ def try_acquire() -> bool:
         return True
     except ClientError as exc:
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False  # lost the race; caller retries
+            return False
         raise
 
 

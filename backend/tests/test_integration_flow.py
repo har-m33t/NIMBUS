@@ -15,7 +15,7 @@ def test_caption_event_schema_has_required_fields():
         sequenceNumber=1,
         payload={
             "text": "I want to go.",
-            "ssmlUrl": "https://s3.example.com/audio.mp3",
+            "audioUrl": "https://s3.example.com/audio.mp3",
             "emotion": "CALM",
             "rawGlossFallback": False,
         }
@@ -31,7 +31,7 @@ def test_signal_new_caption_event_schema():
         event="NEW_CAPTION",
         sessionId="sid",
         roomId="rid",
-        payload={"text": "Hello", "ssmlUrl": "https://example.com/audio.mp3"},
+        payload={"text": "Hello", "audioUrl": "https://example.com/audio.mp3"},
     )
     assert signal.event == "NEW_CAPTION"
 
@@ -46,7 +46,7 @@ def test_handler_emits_caption_on_boundary():
     assert "conn_id" in params
     assert "session_id" in params
     assert "text" in params
-    assert "ssml_url" in params
+    assert "audio_url" in params
     assert "used_fallback" in params
 
 

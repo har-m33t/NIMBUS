@@ -2,3 +2,6 @@ sagemaker
 torch
 numpy
 pandas
+openpyxl
+opencv-python
+mediapipe

@@ -70,8 +70,12 @@ def test_caption_emitted_on_15_token_boundary(monkeypatch, patched_base):
     assert "CAPTION" in types
     caption = next(p["payload"] for p in patched_base if p["payload"]["type"] == "CAPTION")
     assert caption["payload"]["text"] == "I go store."
-    assert caption["payload"]["ssmlUrl"] == "https://s3.example.com/audio.mp3"
-
+    assert caption["payload"].get("audioUrl") is None
+    
+    signals = [p["payload"] for p in patched_base if p["payload"]["type"] == "SIGNAL"]
+    audio_signals = [s for s in signals if s.get("event") == "AUDIO_READY"]
+    assert len(audio_signals) == 1
+    assert audio_signals[0]["payload"]["audioUrl"] == "https://s3.example.com/audio.mp3"
 
 def test_caption_emitted_on_eos_token(monkeypatch, patched_base):
     from handlers import process_frame

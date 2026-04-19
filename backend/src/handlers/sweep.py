@@ -19,7 +19,7 @@ import boto3
 from common.emit import post_to_connection
 from common.logger import logger
 from common.metrics import MetricUnit, metrics
-from common.session import drain_buffer, get_session, recent_captions
+from common.session import drain_buffer, get_session, recent_captions, record_caption
 from common.ssml import build_ssml, default_voice, get_prosody_map
 from services.bedrock_interpreter import safe_interpret
 from services.polly_tts import safe_synthesize
@@ -42,8 +42,8 @@ def _scan_active_sessions() -> list[dict]:
     resp = _get_table().scan(
         FilterExpression="attribute_exists(glossBuffer) AND size(glossBuffer) > :zero",
         ExpressionAttributeValues={":zero": 0},
-        ProjectionExpression="sessionId, #ts, connectionId, roomId, domainName, #st, lastTokenAt",
-        ExpressionAttributeNames={"#ts": "timestamp", "#st": "stage"},
+        ProjectionExpression="sessionId, #sk, connectionId, roomId, domainName, #st, lastTokenAt",
+        ExpressionAttributeNames={"#sk": "sk", "#st": "stage"},
     )
     return resp.get("Items", [])
 
@@ -59,6 +59,7 @@ def _make_apigw_event(domain: str, stage: str) -> dict:
 def _process_session(session_id: str, sort_key: str, connection_id: str,
                       room_id: str, domain: str, stage: str) -> None:
     """Check one session and flush if stale. Called from both scan and direct modes."""
+    sort_key = sort_key or "STATE"
     try:
         sess = get_session(session_id, sort_key)
     except Exception:
@@ -88,6 +89,10 @@ def _process_session(session_id: str, sort_key: str, connection_id: str,
     text, used_fallback = safe_interpret(tokens, context, emotion="CALM")
     if used_fallback:
         metrics.add_metric(name="BedrockFallbacks", unit=MetricUnit.Count, value=1)
+    try:
+        record_caption(session_id, text, sort_key)
+    except Exception:
+        logger.exception("sweep: caption persistence failed")
 
     ssml_url: str | None = None
     try:
@@ -133,7 +138,7 @@ def handler(event: dict, _context: Any) -> dict:
         for item in sessions:
             _process_session(
                 session_id=item.get("sessionId", ""),
-                sort_key=item.get("timestamp", ""),
+                sort_key=item.get("sk", "STATE"),
                 connection_id=item.get("connectionId", ""),
                 room_id=item.get("roomId", ""),
                 domain=item.get("domainName", ""),

@@ -25,7 +25,7 @@ from common.errors import SageMakerError
 from common.logger import bind_session, logger
 from common.metrics import MetricUnit, metrics
 from common.schemas import InferMessage
-from common.session import append_gloss, drain_buffer, recent_captions
+from common.session import append_gloss, drain_buffer, recent_captions, record_caption
 from common.ssml import build_ssml, default_voice, get_prosody_map
 from services import sagemaker_inference
 from services.bedrock_interpreter import safe_interpret
@@ -85,7 +85,7 @@ def _emit_caption(
     session_id: str,
     room_id: str,
     text: str,
-    ssml_url: str | None,
+    audio_url: str | None,
     used_fallback: bool,
 ) -> None:
     post_to_connection(event, conn_id, {
@@ -95,7 +95,7 @@ def _emit_caption(
         "timestamp": _iso_now(),
         "payload": {
             "text": text,
-            "ssmlUrl": ssml_url,
+            "audioUrl": audio_url,
             "emotion": "CALM",
             "rawGlossFallback": used_fallback,
         },
@@ -103,7 +103,7 @@ def _emit_caption(
     # Handoff to Member 1's NIMBUS_PROD_BroadcastCaption (PROTOCOLS.md §1.2)
     _emit_signal(event, conn_id, session_id, room_id, "NEW_CAPTION", {
         "text": text,
-        "ssmlUrl": ssml_url,
+        "audioUrl": audio_url,
     })
 
 
@@ -144,27 +144,35 @@ def _flush_and_caption(
         metrics.add_metric(name="BedrockFallbacks", unit=MetricUnit.Count, value=1)
         logger.warning("bedrock fallback", extra={"token_count": len(tokens)})
     logger.info("bedrock interpret", extra={"latencyMs": bedrock_ms, "usedFallback": used_fallback})
+    try:
+        record_caption(session_id, text, sort_key)
+    except Exception:
+        logger.exception("caption persistence failed")
 
-    ssml_url: str | None = None
+    # Emit CAPTION immediately after Bedrock to stay inside the <1.5s budget; Polly follows asynchronously.
+    _emit_caption(event, conn_id, session_id, room_id, text, audio_url=None, used_fallback=used_fallback)
+    metrics.add_metric(name="CaptionsEmitted", unit=MetricUnit.Count, value=1)
+    flush_ms = (time.perf_counter() - flush_start) * 1000
+    metrics.add_metric(name="FlushLatencyMs", unit=MetricUnit.Milliseconds, value=flush_ms)
+    logger.info("caption emitted", extra={"flushLatencyMs": flush_ms, "textLength": len(text)})
+
+    audio_url: str | None = None
     polly_start = time.perf_counter()
     try:
         prosody = get_prosody_map()
         ssml = build_ssml(text, emotion="CALM", prosody_map=prosody)
         voice = default_voice(prosody)
-        ssml_url = safe_synthesize(ssml, voice, session_id)
+        audio_url = safe_synthesize(ssml, voice, session_id)
         polly_ms = (time.perf_counter() - polly_start) * 1000
         metrics.add_metric(name="PollyLatencyMs", unit=MetricUnit.Milliseconds, value=polly_ms)
         metrics.add_metric(name="PollyCharactersSynthesized", unit=MetricUnit.Count, value=len(text))
         logger.info("polly synthesize", extra={"latencyMs": polly_ms, "charCount": len(text)})
     except Exception:
-        logger.exception("ssml/polly step failed; delivering caption without audio")
+        logger.exception("ssml/polly step failed; caption already delivered without audio")
         metrics.add_metric(name="PollyFailures", unit=MetricUnit.Count, value=1)
 
-    _emit_caption(event, conn_id, session_id, room_id, text, ssml_url, used_fallback)
-    metrics.add_metric(name="CaptionsEmitted", unit=MetricUnit.Count, value=1)
-    flush_ms = (time.perf_counter() - flush_start) * 1000
-    metrics.add_metric(name="FlushLatencyMs", unit=MetricUnit.Milliseconds, value=flush_ms)
-    logger.info("caption emitted", extra={"flushLatencyMs": flush_ms, "textLength": len(text)})
+    if audio_url:
+        _emit_signal(event, conn_id, session_id, room_id, "AUDIO_READY", {"audioUrl": audio_url})
 
 
 @metrics.log_metrics
@@ -233,8 +241,18 @@ def handler(event: dict, _context: Any) -> dict:
 
     if tokens:
         try:
-            buf_attrs = append_gloss(msg.sessionId, tokens, connection_id, msg.roomId)
-            sort_key = buf_attrs.get("timestamp", "")
+            try:
+                buf_attrs = append_gloss(
+                    msg.sessionId,
+                    tokens,
+                    connection_id,
+                    msg.roomId,
+                    ctx.get("domainName"),
+                    ctx.get("stage"),
+                )
+            except TypeError:
+                buf_attrs = append_gloss(msg.sessionId, tokens, connection_id, msg.roomId)
+            sort_key = buf_attrs.get("sk") or buf_attrs.get("timestamp") or "STATE"
             buf_size = len(buf_attrs.get("glossBuffer", []))
             logger.info("gloss appended", extra={"bufferSize": buf_size})
             if _should_flush(buf_attrs, tokens):

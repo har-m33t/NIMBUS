@@ -31,3 +31,21 @@ claude.local.md
 *.pyc
 *.pth
 *.task
+
+# Data & Workspaces
+backend/ml_pipeline/data/
+backend/ml_pipeline/results/
+test_data/
+model/
+
+# Artifacts & Temporary files
+lambda.zip
+lambda_patched.zip
+lambda_unzipped/
+lambda_url.txt
+ws_default_policy.json
+ws_dont_modify_policy.json
+
+# Pytest caching (permissions errors)
+backend/pytest-cache-files-*/
+backend/tests/_tmp_ml_backtesting/
