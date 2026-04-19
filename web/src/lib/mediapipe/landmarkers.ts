@@ -19,7 +19,7 @@ export async function createLandmarkers(): Promise<Landmarkers> {
   const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
 
   const hand = await HandLandmarker.createFromOptions(fileset, {
-    baseOptions: { modelAssetPath: HAND_MODEL_URL, delegate: "GPU" },
+    baseOptions: { modelAssetPath: HAND_MODEL_URL, delegate: "CPU" },
     runningMode: "VIDEO",
     numHands: 1,
   });

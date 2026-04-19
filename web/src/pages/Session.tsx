@@ -118,8 +118,14 @@ export default function Session() {
           existingPeers.forEach((peer) => startOffer(peer));
           break;
         }
-        case "PEER_JOINED":
+        case "PEER_JOINED": {
+          // New peer will send us an SDP_OFFER via their JOIN_ROOM flow.
+          // Call startOffer as a fallback in case their offer is lost
+          // (e.g. localStream not ready on their side). startOffer checks
+          // for an existing PC and skips if negotiation is already in progress.
+          startOffer(msg.payload as PeerInfo);
           break;
+        }
         case "PEER_LEFT": {
           const payload = msg.payload as PeerInfo;
           removePeer(payload.connectionId);

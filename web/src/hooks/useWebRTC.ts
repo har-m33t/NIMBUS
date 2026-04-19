@@ -160,6 +160,13 @@ export function useWebRTC({ localStream, sendWebRtcSignal }: UseWebRTCArgs) {
       console.log("[WebRTC] handleSignal", event, "from", remoteConnectionId);
 
       if (event === "SDP_OFFER") {
+        // If already connected, ignore duplicate offers (glare protection)
+        const existingPc = pcsRef.current.get(remoteConnectionId);
+        if (existingPc?.connectionState === "connected") {
+          console.log("[WebRTC] ignoring SDP_OFFER — already connected to", remoteConnectionId);
+          return;
+        }
+
         // Need localStream before answering so tracks are present → sendrecv SDP
         if (!localStreamRef.current) {
           console.log("[WebRTC] SDP_OFFER queued (waiting for localStream)");
@@ -200,7 +207,10 @@ export function useWebRTC({ localStream, sendWebRtcSignal }: UseWebRTCArgs) {
         sendRef.current("SDP_ANSWER", remoteConnectionId, { sdp: answer.sdp });
       } else if (event === "SDP_ANSWER") {
         const pc = pcsRef.current.get(remoteConnectionId);
-        if (pc) {
+        // Only apply the answer when we are in the have-local-offer state.
+        // Glare (both sides offered simultaneously) can leave the PC in stable
+        // state already; applying a stale answer would throw.
+        if (pc && pc.signalingState === "have-local-offer") {
           await pc.setRemoteDescription(
             new RTCSessionDescription({ type: "answer", sdp: payload.sdp! }),
           );

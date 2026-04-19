@@ -184,7 +184,7 @@ def test_letters_reconstructed_to_words_before_bedrock(monkeypatch, patched_base
     def fake_append_timed(sid, tokens, cid, rid, emotion="CALM"):
         return {
             "glossBuffer": letter_buf,
-            "firstTokenAt": int(time.time() * 1000) - 4000,  # 4s ago → exceeds 3s limit
+            "firstTokenAt": int(time.time() * 1000) - 11000,  # 11s ago → exceeds 10s limit
         }
 
     monkeypatch.setattr(process_frame, "append_gloss", fake_append_timed)

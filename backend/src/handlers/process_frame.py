@@ -36,7 +36,7 @@ from services.polly_tts import safe_synthesize
 
 FACE_CROP_INTERVAL = 10   # PROTOCOLS.md §3.2: face crop every 10 frames
 BUFFER_TOKEN_LIMIT = 20   # unique letters before flush (held-letter dedup means each slot = one distinct letter)
-ELAPSED_LIMIT_MS = 3000   # PROTOCOLS.md §2.2 rule 2 (3s since firstTokenAt)
+ELAPSED_LIMIT_MS = 10000  # flush after 10s of accumulated letters
 
 _BROADCAST_ARN = os.environ.get("BROADCAST_CAPTION_ARN", "")
 _USER_PREFS_TABLE = os.environ.get("USER_PREFS_TABLE", "")

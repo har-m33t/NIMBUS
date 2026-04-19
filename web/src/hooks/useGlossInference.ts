@@ -51,6 +51,7 @@ export function useGlossInference({
   const lastTokenRef = useRef<string | null>(null);
   const lastTokenTimeRef = useRef<number>(0);
   const inferringRef = useRef(false);
+  const handPresentRef = useRef(false);
   const onGlossRef = useRef(onGloss);
   onGlossRef.current = onGloss;
 
@@ -133,7 +134,14 @@ export function useGlossInference({
   }, []);
 
   useEffect(() => {
-    if (!enabled || !hand21) return;
+    if (!enabled || !hand21) {
+      if (handPresentRef.current) {
+        handPresentRef.current = false;
+        onGlossRef.current?.("[EOS]");
+      }
+      return;
+    }
+    handPresentRef.current = true;
     pushFrame(hand21);
   }, [enabled, hand21, pushFrame]);
 

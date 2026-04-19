@@ -17,25 +17,24 @@ def test_should_flush_rule_a_20_tokens():
     assert _should_flush(buf_attrs, []) is True
 
 
-def test_should_flush_rule_b_3s_elapsed():
-    """Rule (b): now() - firstTokenAt >= 3000ms triggers flush."""
+def test_should_flush_rule_b_10s_elapsed():
+    """Rule (b): now() - firstTokenAt >= 10000ms triggers flush."""
     from handlers.process_frame import _should_flush
 
-    # Buffer with old firstTokenAt
     buf_attrs = {
         "glossBuffer": ["A", "B", "C"],  # only 3 tokens
-        "firstTokenAt": int(time.time() * 1000) - 3100,  # 3.1 seconds ago
+        "firstTokenAt": int(time.time() * 1000) - 10100,  # 10.1 seconds ago
     }
     assert _should_flush(buf_attrs, []) is True
 
 
 def test_should_flush_rule_b_below_threshold():
-    """Rule (b) does not trigger before 3s."""
+    """Rule (b) does not trigger before 10s."""
     from handlers.process_frame import _should_flush
 
     buf_attrs = {
         "glossBuffer": ["A"],
-        "firstTokenAt": int(time.time() * 1000) - 2500,  # only 2.5s ago
+        "firstTokenAt": int(time.time() * 1000) - 5000,  # only 5s ago
     }
     assert _should_flush(buf_attrs, []) is False
 
@@ -69,8 +68,8 @@ def test_boundary_detector_all_four_rules():
     # Rule (a): 20+ tokens
     assert _should_flush({"glossBuffer": ["X"] * 20, "firstTokenAt": now_ms}, [])
 
-    # Rule (b): 3s+ elapsed
-    assert _should_flush({"glossBuffer": ["X"], "firstTokenAt": now_ms - 3100}, [])
+    # Rule (b): 10s+ elapsed
+    assert _should_flush({"glossBuffer": ["X"], "firstTokenAt": now_ms - 10100}, [])
 
     # Rule (d): [EOS] token
     assert _should_flush({"glossBuffer": ["X"], "firstTokenAt": now_ms}, ["Y", "[EOS]"])
