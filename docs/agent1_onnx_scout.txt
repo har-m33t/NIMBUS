@@ -1,0 +1,53 @@
+Agent 1 ONNX Scout Report
+Date: April 18, 2026
+
+Goal
+- Find a pretrained sign-language model from Hugging Face or similar, get it into ONNX, and make it usable from this repo's 258-feature MediaPipe pipeline.
+
+Rejected candidates
+- Repository: aje6/ASL-Fingerspelling-Detection
+  File: onnx/model_quantized.onnx
+  Input shape: [1, 3, 640, 640]
+  Result: Image detector, not a landmark classifier.
+
+- Repository: fhswf/rtm133lifting-finetuning-signs-fingerspelling-dgs
+  File: rtm133lifting-finetuning-sings-fingerspelling-dgs-small.onnx
+  Input shape: ['batch_size', 266]
+  Result: Landmark model, but 266 features does not fit the plan's 258/225/63 adapter path.
+
+- Repository: sharonn18/tgcn-wlasl
+  Artifact: PyTorch checkpoints only
+  Published input contract: (batch_size, 55, 100)
+  Result: No ONNX artifact and not compatible with the repo's feature contract.
+
+Selected source model
+- Repository: ademaulana/CNN-ASL-Alphabet-Sign-Recognition
+  Source artifacts downloaded:
+  - best_cnn_asl_model.keras
+  - cnn_asl_model_final.h5
+  Published input contract: 63 MediaPipe hand landmark features
+  Result: Compatible with the plan's 63-feature adapter path.
+
+What was produced
+- frontend/src/capture/wlasl_lite.onnx
+  Provenance: exported from the pretrained Hugging Face Keras weights above.
+  Final ONNX input shape after export: [1, 5, 63]
+  Final ONNX output shape after export: [1, 29]
+
+- frontend/src/capture/label_map.json
+  Class mapping:
+  - A-Z
+  - DEL
+  - NOTHING
+  - SPACE
+
+- frontend/src/capture/adapter.py
+  The existing 258 -> 63 adapter path is the one used for this model.
+
+Validation
+- validate_pretrained.py was run against frontend/src/capture/wlasl_lite.onnx.
+- The model loaded successfully and produced a non-zero output vector.
+
+Notes
+- This is an ASL alphabet landmark classifier rather than a WLASL gloss classifier.
+- It satisfies the stage-1 requirement to land a pretrained ONNX model plus label map in the repo and it matches the allowed 63-feature adapter path from AGENT_PLAN.md.
