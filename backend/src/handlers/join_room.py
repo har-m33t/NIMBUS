@@ -59,8 +59,7 @@ def handler(event, _context):
         all_peers = list(dynamo.list_room_peers(room_id))
         _log.info(
             "JOIN_ROOM roomId=%s peers_in_room=%d peers=%s",
-            room_id, len(all_peers),
-            json.dumps([{"connectionId": p["connectionId"], "sessionId": p.get("sessionId", "")} for p in all_peers]),
+            room_id, len(all_peers), str(all_peers),
         )
 
         stale = [
@@ -87,8 +86,7 @@ def handler(event, _context):
         ]
         _log.info(
             "JOIN_ROOM existing_peers_for_ack sessionId=%s roomId=%s count=%d peers=%s",
-            session_id, room_id, len(existing),
-            json.dumps([{"connectionId": p["connectionId"], "sessionId": p.get("sessionId", "")} for p in existing]),
+            session_id, room_id, len(existing), str(existing),
         )
     except Exception:  # noqa: BLE001
         _log.exception("JOIN_ROOM failed for %s / %s", session_id, room_id)

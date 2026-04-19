@@ -27,12 +27,13 @@ def _client(endpoint: str | None = None):
 
 def post_to_connection(connection_id: str, payload: dict) -> bool:
     """Send one payload. Returns False if the connection is gone."""
-    payload_preview = json.dumps(payload)[:200]
+    data = json.dumps(payload).encode("utf-8")
+    payload_preview = data[:200].decode("utf-8", errors="replace")
     _log.info("post_to_connection target=%s payload_preview=%s", connection_id, payload_preview)
     try:
         _client().post_to_connection(
             ConnectionId=connection_id,
-            Data=json.dumps(payload).encode("utf-8"),
+            Data=data,
         )
         _log.info("post_to_connection delivered target=%s", connection_id)
         return True
@@ -51,7 +52,8 @@ def post_to_connection(connection_id: str, payload: dict) -> bool:
 def broadcast(connection_ids: Iterable[str], payload: dict) -> list[str]:
     """Send payload to every connection. Returns the list of stale connectionIds."""
     targets = list(connection_ids)
-    _log.info("broadcast total_targets=%d payload_preview=%s", len(targets), json.dumps(payload)[:200])
+    payload_preview = json.dumps(payload)[:200]
+    _log.info("broadcast total_targets=%d payload_preview=%s", len(targets), payload_preview)
     stale: list[str] = []
     succeeded: list[str] = []
     for cid in targets:
