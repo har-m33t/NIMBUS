@@ -6,12 +6,12 @@ import time
 import pytest
 
 
-def test_should_flush_rule_a_15_tokens():
-    """Rule (a): len(glossBuffer) >= 15 triggers flush."""
+def test_should_flush_rule_a_20_tokens():
+    """Rule (a): len(glossBuffer) >= 20 triggers flush (20 unique letters = ~4-5 words)."""
     from handlers.process_frame import _should_flush
 
     buf_attrs = {
-        "glossBuffer": ["TOKEN"] * 15,
+        "glossBuffer": list("ABCDEFGHIJKLMNOPQRST"),  # 20 single-char tokens
         "firstTokenAt": int(time.time() * 1000) - 100,
     }
     assert _should_flush(buf_attrs, []) is True
@@ -66,8 +66,8 @@ def test_boundary_detector_all_four_rules():
 
     now_ms = int(time.time() * 1000)
 
-    # Rule (a): 15+ tokens
-    assert _should_flush({"glossBuffer": ["X"] * 15, "firstTokenAt": now_ms}, [])
+    # Rule (a): 20+ tokens
+    assert _should_flush({"glossBuffer": ["X"] * 20, "firstTokenAt": now_ms}, [])
 
     # Rule (b): 3s+ elapsed
     assert _should_flush({"glossBuffer": ["X"], "firstTokenAt": now_ms - 3100}, [])

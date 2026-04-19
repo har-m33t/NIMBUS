@@ -50,9 +50,9 @@ def test_handler_emits_caption_on_boundary():
     assert "used_fallback" in params
 
 
-def test_should_flush_on_15_tokens_triggers_caption():
-    """Boundary rule (a) should lead to _flush_and_caption call."""
+def test_should_flush_on_20_tokens_triggers_caption():
+    """Boundary rule (a): 20 unique letters → flush (matched to BUFFER_TOKEN_LIMIT)."""
     from handlers.process_frame import _should_flush
     import time
-    buf_attrs = {"glossBuffer": ["T"] * 15, "firstTokenAt": int(time.time() * 1000)}
+    buf_attrs = {"glossBuffer": list("ABCDEFGHIJKLMNOPQRST"), "firstTokenAt": int(time.time() * 1000)}
     assert _should_flush(buf_attrs, []) is True

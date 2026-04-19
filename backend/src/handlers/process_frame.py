@@ -1,11 +1,13 @@
 """NIMBUS_PROD_ProcessFrame — AI pipeline orchestrator.
 
 Phases implemented:
-  1. Parse INFER, accept gloss token from browser edge-inference OR fall back to
-     SageMaker ASL inference, emit GLOSS.
-  2. Sentence boundary detection (PROTOCOLS.md §2.2): flush glossBuffer on
-     15 tokens / 3s elapsed / [EOS] token / 1.5s pause (SWEEP via EventBridge).
-  3. Bedrock interpretation (gloss → English), raw-gloss fallback.
+  1. Parse INFER. Browser ONNX model classifies hand landmarks into ASL letters (A–Z)
+     and sends them as `token`. Held-letter runs are deduplicated in Lambda memory;
+     low-confidence frames insert word-boundary space markers.
+  2. Letter buffer accumulation in DynamoDB. Flush when 20 unique letters are stored,
+     3s elapsed since first letter, or 1.5s pause (SWEEP via EventBridge).
+  3. On flush: reconstruct words from letters + space markers, then call Bedrock
+     (Claude) to produce a fluent English sentence with emotion-matched tone.
   4. Rekognition emotion detection from face-crop JPEG every 10th frame (§3.2).
   5. Polly synthesis → S3 presigned URL, emit CAPTION + SIGNAL NEW_CAPTION.
 """
@@ -23,18 +25,17 @@ from botocore.config import Config
 from pydantic import ValidationError
 
 from common.emit import post_to_connection
-from common.errors import SageMakerError
 from common.logger import bind_session, logger
 from common.metrics import MetricUnit, metrics
 from common.schemas import InferMessage
 from common.session import append_gloss, drain_buffer, recent_captions, store_caption, update_emotion
 from common.ssml import build_ssml, default_voice, get_prosody_map
-from services import rekognition_emotion, sagemaker_inference
+from services import rekognition_emotion
 from services.bedrock_interpreter import safe_interpret
 from services.polly_tts import safe_synthesize
 
 FACE_CROP_INTERVAL = 10   # PROTOCOLS.md §3.2: face crop every 10 frames
-BUFFER_TOKEN_LIMIT = 15   # PROTOCOLS.md §2.2 rule 1
+BUFFER_TOKEN_LIMIT = 20   # unique letters before flush (held-letter dedup means each slot = one distinct letter)
 ELAPSED_LIMIT_MS = 3000   # PROTOCOLS.md §2.2 rule 2 (3s since firstTokenAt)
 
 _BROADCAST_ARN = os.environ.get("BROADCAST_CAPTION_ARN", "")
@@ -44,6 +45,10 @@ _lambda_client = None
 # Per-Lambda-instance emotion cache — avoids a DDB read on non-face-crop 10th
 # frames. Falls back to "CALM" until the first Rekognition detection.
 _session_emotion: dict[str, str] = {}
+
+# Per-Lambda-instance last-letter cache for held-letter deduplication.
+# Prevents the same letter being appended every frame while the hand is held still.
+_last_token: dict[str, str] = {}
 
 
 def _get_lambda_client():
@@ -153,6 +158,15 @@ def _emit_caption(
     return caption
 
 
+def _letters_to_words(raw: list[str]) -> list[str]:
+    """Reconstruct words from a raw letter buffer that may contain space markers (" ").
+
+    Example: ["H","E","L","L","O"," ","W","O","R","L","D"] → ["HELLO", "WORLD"]
+    """
+    joined = "".join(raw).strip()
+    return [w for w in joined.split() if w]
+
+
 def _should_flush(buf_attrs: dict, new_tokens: list[str]) -> bool:
     buf = buf_attrs.get("glossBuffer", [])
     if len(buf) >= BUFFER_TOKEN_LIMIT:
@@ -174,9 +188,20 @@ def _flush_and_caption(
 ) -> None:
     """Drain the STATE buffer and emit CAPTION + NEW_CAPTION SIGNAL."""
     flush_start = time.perf_counter()
-    tokens = drain_buffer(session_id)
-    if not tokens:
+    raw_tokens = drain_buffer(session_id)
+    if not raw_tokens:
         return
+
+    # Fingerspelling mode: buffer holds individual letters + " " word-boundary markers.
+    # Reconstruct words before sending to Bedrock.
+    if all(len(t) <= 1 for t in raw_tokens):
+        tokens = _letters_to_words(raw_tokens)
+        if not tokens:
+            logger.info("letter buffer drained but produced no words; skipping caption")
+            return
+        logger.info("letters reconstructed to words", extra={"raw_count": len(raw_tokens), "words": tokens})
+    else:
+        tokens = raw_tokens
 
     logger.info("buffer drained", extra={"token_count": len(tokens), "reason": "boundary"})
 
@@ -243,51 +268,32 @@ def handler(event: dict, _context: Any) -> dict:
 
     bind_session(msg.sessionId, msg.roomId)
 
-    # ── Edge-inference mode: browser ONNX sent a single gloss token directly ──
-    if msg.payload.token:
-        tokens = [msg.payload.token]
-        confidence = 1.0
-        logger.info("edge token received", extra={"token": msg.payload.token})
-        _emit_gloss(event, connection_id, msg, tokens, confidence)
-        metrics.add_metric(name="GlossEventsEmitted", unit=MetricUnit.Count, value=1)
-        metrics.add_metric(name="EdgeInferTokens", unit=MetricUnit.Count, value=1)
+    # ── Edge-inference mode: browser ONNX classifies hand landmarks into letters ──
+    # token = letter ("A"–"Z") when confident, "" when below confidence threshold.
+    tokens: list[str] = []
+    raw_token = msg.payload.token
+    if raw_token is None:
+        logger.warning("INFER message missing token field")
+        return {"statusCode": 400, "body": "missing token"}
+
+    if raw_token == "":
+        # Low-confidence frame → word boundary. Insert a space marker so words
+        # are separable when the buffer is later flushed and reconstructed.
+        last = _last_token.get(msg.sessionId)
+        if last and last != " ":
+            _last_token[msg.sessionId] = " "
+            tokens = [" "]
     else:
-        # ── Legacy SageMaker mode: raw keypoints → model inference ──
-        if not msg.payload.keypoints:
-            logger.warning("INFER message has neither token nor keypoints")
-            return {"statusCode": 400, "body": "missing token or keypoints"}
-
-        if not _cold_start_checked.get("done"):
-            if not sagemaker_inference.is_in_service():
-                _emit_signal(event, connection_id, msg.sessionId, msg.roomId, "ENDPOINT_WARMING")
-                metrics.add_metric(name="EndpointWarming", unit=MetricUnit.Count, value=1)
-                _cold_start_checked["done"] = True
-                return {"statusCode": 200}
-            _cold_start_checked["done"] = True
-
-        t0 = time.perf_counter()
-        try:
-            result = sagemaker_inference.invoke(msg.payload.keypoints)
-        except SageMakerError as exc:
-            metrics.add_metric(name="SageMakerErrors", unit=MetricUnit.Count, value=1)
-            logger.exception("sagemaker invoke failed", extra={"stage": "sagemaker"})
-            _emit_error(
-                event, connection_id, msg.sessionId,
-                code="SAGEMAKER_INFERENCE_FAILED",
-                message=str(exc)[:200],
-                glossFallback="[UNKNOWN_SIGN]",
-            )
-            return {"statusCode": 200}
-        finally:
-            sm_ms = (time.perf_counter() - t0) * 1000
-            metrics.add_metric(name="SageMakerLatencyMs", unit=MetricUnit.Milliseconds, value=sm_ms)
-
-        tokens = result["tokens"]
-        confidence = result["confidence"]
-        logger.info("sagemaker invoked", extra={"stage": "sagemaker", "latencyMs": sm_ms, "tokenCount": len(tokens), "confidence": confidence})
-
-        _emit_gloss(event, connection_id, msg, tokens, confidence)
-        metrics.add_metric(name="GlossEventsEmitted", unit=MetricUnit.Count, value=1)
+        # Deduplicate held-letter runs: holding "H" still for 5 frames stores
+        # only one "H" in DynamoDB instead of five.
+        last = _last_token.get(msg.sessionId)
+        _last_token[msg.sessionId] = raw_token
+        if raw_token != last:
+            tokens = [raw_token]
+            _emit_gloss(event, connection_id, msg, tokens, confidence=1.0)
+            metrics.add_metric(name="GlossEventsEmitted", unit=MetricUnit.Count, value=1)
+            metrics.add_metric(name="EdgeInferTokens", unit=MetricUnit.Count, value=1)
+            logger.info("edge letter received", extra={"letter": raw_token})
 
     # Emotion detection — every FACE_CROP_INTERVAL frames (PROTOCOLS.md §3.2)
     if msg.sequenceNumber % FACE_CROP_INTERVAL == 0:
@@ -333,4 +339,3 @@ def handler(event: dict, _context: Any) -> dict:
     return {"statusCode": 200}
 
 
-_cold_start_checked: dict[str, bool] = {}

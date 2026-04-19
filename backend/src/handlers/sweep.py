@@ -79,9 +79,20 @@ def _process_session(session_id: str, sort_key: str, connection_id: str,
         return
 
     logger.info("sweep: buffer stale", extra={"staleMs": stale_ms, "tokenCount": len(buf), "stage": "sweep"})
-    tokens = drain_buffer(session_id, sort_key)
-    if not tokens:
+    raw_tokens = drain_buffer(session_id, sort_key)
+    if not raw_tokens:
         return  # already flushed (race)
+
+    # Fingerspelling mode: reconstruct words from individual letters + space markers.
+    if all(len(t) <= 1 for t in raw_tokens):
+        joined = "".join(raw_tokens).strip()
+        tokens = [w for w in joined.split() if w]
+        if not tokens:
+            logger.info("sweep: letter buffer produced no words; skipping caption")
+            return
+        logger.info("sweep: letters reconstructed to words", extra={"words": tokens})
+    else:
+        tokens = raw_tokens
 
     apigw_event = _make_apigw_event(domain, stage)
     emotion = str(sess.get("lastEmotion", "CALM"))

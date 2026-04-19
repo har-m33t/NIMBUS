@@ -36,16 +36,18 @@ def _bedrock():
 
 
 def _build_prompt(tokens: list[str], recent: list[str], emotion: str) -> str:
-    gloss = " ".join(tokens)
+    words = " ".join(tokens)
     context = ""
     if recent:
         joined = "\n".join(f"- {c}" for c in recent[-3:])
         context = f"\nPrevious captions for context:\n{joined}\n"
     return (
-        "You are an ASL interpreter. Convert the following ASL gloss tokens into "
-        f"a single, natural English sentence. The signer's detected mood is {emotion}.\n"
+        "You are an ASL interpreter. The following words were spelled letter-by-letter "
+        "using ASL fingerspelling. Convert them into a single, fluent English sentence. "
+        f"The signer's detected mood is {emotion}, so match the tone accordingly — "
+        "a happy mood should sound warm and upbeat, angry should sound direct and firm, etc.\n"
         f"{context}\n"
-        f"Gloss tokens: {gloss}\n\n"
+        f"Fingerspelled words: {words}\n\n"
         "Respond with only the English sentence, no explanation."
     )
 
