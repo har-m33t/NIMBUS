@@ -219,13 +219,17 @@ def test_edge_token_emits_gloss(patched_edge):
     assert gloss["payload"]["confidence"] == 1.0
 
 
-def test_edge_token_skips_sagemaker(patched_edge):
-    """Edge-inference mode must not import or invoke SageMaker."""
+def test_edge_token_skips_sagemaker(patched_edge, monkeypatch):
+    """Edge-inference mode must never invoke SageMaker endpoint."""
     from handlers import process_frame
-    assert not hasattr(process_frame, "sagemaker_inference"), \
-        "sagemaker_inference must not be imported in process_frame"
+    from services import sagemaker_inference
+
+    invocations: list = []
+    monkeypatch.setattr(sagemaker_inference, "invoke", lambda kp: invocations.append(kp) or {})
+
     resp = process_frame.handler(_edge_event("H"), CTX)
     assert resp["statusCode"] == 200
+    assert not invocations, "SageMaker invoke must never be called in edge-inference mode"
 
 
 def test_edge_token_appends_to_gloss_buffer(patched_edge, monkeypatch):

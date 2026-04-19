@@ -34,7 +34,7 @@ def _event(target_language: str | None = None) -> dict:
         "timestamp": "2026-04-19T10:00:00Z",
         "sequenceNumber": 1,
         "payload": {
-            "keypoints": {"leftHand": [], "rightHand": [], "pose": []},
+            "token": "A",
             "includeFaceCrop": False,
         },
     }
@@ -77,7 +77,7 @@ def base_patches(monkeypatch):
     monkeypatch.setattr(process_frame, "update_emotion", lambda sid, emo: None)
     monkeypatch.setattr(
         process_frame, "append_gloss",
-        lambda *a, **kw: {"glossBuffer": ["HELLO", "[EOS]"]},
+        lambda *a, **kw: {"glossBuffer": ["X"] * 20},  # force flush via 20-token rule
     )
     monkeypatch.setattr(
         process_frame, "drain_buffer",
@@ -88,7 +88,7 @@ def base_patches(monkeypatch):
         lambda sid, limit=3: [],
     )
     monkeypatch.setattr(process_frame, "store_caption", lambda sid, text: None)
-    process_frame._cold_start_checked.clear()
+    process_frame._last_token.clear()
     process_frame._session_emotion.clear()
     yield posts
 

@@ -96,7 +96,7 @@ def _infer_event(user_id: str | None = None) -> dict:
         "roomId": "room-2",
         "timestamp": "2026-04-19T10:00:00Z",
         "sequenceNumber": 1,
-        "payload": {"keypoints": {"leftHand": [], "rightHand": [], "pose": []}, "includeFaceCrop": False},
+        "payload": {"token": "A", "includeFaceCrop": False},
     }
     if user_id:
         body["userId"] = user_id
@@ -121,7 +121,7 @@ def pf_patched(monkeypatch):
     monkeypatch.setattr(process_frame, "post_to_connection",
                         lambda event, conn, payload: posts.append(payload) or True)
     monkeypatch.setattr(process_frame, "append_gloss",
-                        lambda *a, **kw: {"glossBuffer": ["A"] * 15})  # force flush
+                        lambda *a, **kw: {"glossBuffer": ["A"] * 20})  # force flush
     monkeypatch.setattr(process_frame, "drain_buffer",
                         lambda sid: ["STORE", "I", "GO"])
     monkeypatch.setattr(process_frame, "recent_captions", lambda sid, limit=3: [])
@@ -134,7 +134,7 @@ def pf_patched(monkeypatch):
     monkeypatch.setattr(rekognition_emotion, "detect_emotion",
                         lambda b: ("CALM", 1.0, {"CALM": 1.0}))
     monkeypatch.setattr(process_frame, "update_emotion", lambda sid, emo: None)
-    process_frame._cold_start_checked.clear()
+    process_frame._last_token.clear()
     process_frame._session_emotion.clear()
     process_frame._prefs_table = None
     return posts
