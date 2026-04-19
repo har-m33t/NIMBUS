@@ -11,6 +11,7 @@ connectionId back to sessionId / roomId without a table scan.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Iterable, Optional
@@ -22,6 +23,8 @@ _SESSION_TTL_SECONDS = 4 * 60 * 60  # matches PROTOCOLS.md §2.1
 
 _boto_config = Config(retries={"max_attempts": 3, "mode": "standard"})
 _dynamodb = boto3.resource("dynamodb", config=_boto_config)
+
+_log = logging.getLogger(__name__)
 
 SESSIONS_TABLE = os.environ["SESSIONS_TABLE"]
 ROOMS_TABLE = os.environ["ROOMS_TABLE"]
@@ -99,18 +102,19 @@ def update_session_room(session_id: str, room_id: str) -> None:
 
 
 def join_room(room_id: str, connection_id: str, session_id: str) -> None:
-    _rooms.put_item(
-        Item={
-            "roomId": room_id,
-            "connectionId": connection_id,
-            "sessionId": session_id,
-            "joinedAt": _iso_now(),
-            "ttl": _ttl(),
-        }
-    )
+    item = {
+        "roomId": room_id,
+        "connectionId": connection_id,
+        "sessionId": session_id,
+        "joinedAt": _iso_now(),
+        "ttl": _ttl(),
+    }
+    _log.info("dynamo.join_room writing item roomId=%s connectionId=%s sessionId=%s", room_id, connection_id, session_id)
+    _rooms.put_item(Item=item)
 
 
 def leave_room(room_id: str, connection_id: str) -> None:
+    _log.info("dynamo.leave_room roomId=%s connectionId=%s", room_id, connection_id)
     _rooms.delete_item(Key={"roomId": room_id, "connectionId": connection_id})
 
 
@@ -143,7 +147,9 @@ def list_room_peers(room_id: str) -> Iterable[dict]:
     Like list_room_connections but also exposes sessionId so the web client
     can render stable peer identifiers across reconnects.
     """
+    _log.info("dynamo.list_room_peers querying roomId=%s", room_id)
     last_key = None
+    total = 0
     while True:
         kwargs = {
             "KeyConditionExpression": "roomId = :r",
@@ -154,11 +160,14 @@ def list_room_peers(room_id: str) -> Iterable[dict]:
         if last_key is not None:
             kwargs["ExclusiveStartKey"] = last_key
         resp = _rooms.query(**kwargs)
-        for item in resp.get("Items", []):
+        items = resp.get("Items", [])
+        total += len(items)
+        for item in items:
             yield {
                 "connectionId": item["connectionId"],
                 "sessionId": item.get("sessionId", ""),
             }
         last_key = resp.get("LastEvaluatedKey")
         if not last_key:
+            _log.info("dynamo.list_room_peers roomId=%s total_peers_returned=%d", room_id, total)
             return
