@@ -10,7 +10,7 @@ import logging
 
 from services import dynamo
 from services.response import bad_request, ok, server_error
-from services.websocket import post_to_connection
+from services.websocket import broadcast, post_to_connection
 
 _log = logging.getLogger()
 _log.setLevel(logging.INFO)
@@ -36,6 +36,7 @@ def handler(event, _context):
 
     try:
         dynamo.leave_room(room_id, connection_id)
+        survivors = list(dynamo.list_room_peers(room_id))
     except Exception:  # noqa: BLE001
         _log.exception("LEAVE_ROOM failed for %s / %s", session_id, room_id)
         return server_error("Failed to leave room")
@@ -48,5 +49,21 @@ def handler(event, _context):
         "payload": {"status": "left"},
     }
     post_to_connection(connection_id, ack)
+
+    if survivors:
+        broadcast(
+            [p["connectionId"] for p in survivors],
+            {
+                "type": "SIGNAL",
+                "event": "PEER_LEFT",
+                "sessionId": session_id,
+                "roomId": room_id,
+                "payload": {
+                    "connectionId": connection_id,
+                    "sessionId": session_id,
+                },
+            },
+        )
+
     _log.info("LEAVE_ROOM sessionId=%s roomId=%s", session_id, room_id)
     return ok()

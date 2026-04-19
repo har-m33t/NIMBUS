@@ -1,41 +1,50 @@
 import { motion, AnimatePresence } from "framer-motion";
-import EmotionChip from "../ui/EmotionChip.tsx";
 
 interface Caption {
   id: string;
   text: string;
-  emotion: string;
-  audioUrl: string | null;
+  source?: "STT" | "ASL";
   isMine: boolean;
   isFallback?: boolean;
   timestamp: string;
 }
 
-function SpeakerIcon({ active, failed }: { active: boolean; failed: boolean }) {
-  if (failed) {
+export default function CaptionBar({
+  captions,
+  fontSize = "text-base",
+  overlay = false,
+}: {
+  captions: Caption[];
+  fontSize?: string;
+  overlay?: boolean;
+}) {
+  if (overlay) {
+    // Overlay mode: translucent multi-line captions inside the video
     return (
-      <svg className="w-5 h-5 text-nimbus-mist/40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-        <path d="M11 5L6 9H2v6h4l5 4V5z" />
-        <line x1="23" y1="9" x2="17" y2="15" />
-        <line x1="17" y1="9" x2="23" y2="15" />
-      </svg>
+      <div className="pointer-events-none">
+        <AnimatePresence initial={false}>
+          {captions.slice(-3).map((cap) => (
+            <motion.div
+              key={cap.id}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25 }}
+              className="mb-1"
+            >
+              <span
+                className={`inline-block px-3 py-1.5 rounded-lg bg-black/60 text-white ${fontSize} leading-relaxed max-w-full`}
+                style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+              >
+                {cap.text}
+              </span>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
     );
   }
-  return (
-    <svg
-      className={`w-5 h-5 transition-colors duration-300 ${active ? "text-nimbus-gold" : "text-nimbus-mist/60"}`}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-    >
-      <path d="M11 5L6 9H2v6h4l5 4V5z" />
-      <path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07" opacity={active ? 1 : 0.3} />
-    </svg>
-  );
-}
 
-export default function CaptionBar({ captions }: { captions: Caption[] }) {
+  // Standard mode (non-overlay)
   return (
     <div
       className="w-full bg-white/80 backdrop-blur-sm rounded-xl border border-nimbus-mist/10 shadow-soft p-4 max-h-64 overflow-y-auto"
@@ -57,9 +66,8 @@ export default function CaptionBar({ captions }: { captions: Caption[] }) {
               transition={{ duration: 0.3, ease: "easeOut" }}
               className={`flex items-start gap-3 py-2.5 ${cap.isMine ? "" : "flex-row-reverse text-right"}`}
             >
-              <EmotionChip emotion={cap.emotion} />
               <p
-                className={`flex-1 text-lg leading-relaxed ${
+                className={`flex-1 ${fontSize} leading-relaxed ${
                   cap.isFallback
                     ? "font-mono italic text-nimbus-mist/70"
                     : "text-nimbus-text"
@@ -72,7 +80,6 @@ export default function CaptionBar({ captions }: { captions: Caption[] }) {
                 )}
                 {cap.text}
               </p>
-              <SpeakerIcon active={false} failed={cap.audioUrl === null} />
             </motion.div>
           ))}
         </AnimatePresence>

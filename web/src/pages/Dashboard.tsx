@@ -7,20 +7,20 @@ import SpotlightCard from "../components/ui/SpotlightCard.tsx";
 import MovingBorderButton from "../components/ui/MovingBorderButton.tsx";
 import NimbusButton from "../components/ui/NimbusButton.tsx";
 import NimbusInput from "../components/ui/NimbusInput.tsx";
+import { useRecentSessions } from "../hooks/useRecentSessions.ts";
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const [roomId, setRoomId] = useState("");
   const { phase, triggerPart } = useCloudTransition();
+  const { sessions: recentSessions, clearSessions } = useRecentSessions();
 
   // If clouds are still enveloped (just came from login), trigger the part
   const [contentVisible, setContentVisible] = useState(phase !== "envelope");
 
   useEffect(() => {
     if (phase === "envelope") {
-      // Small delay so envelope is visible, then part
       const t1 = setTimeout(() => triggerPart(), 200);
-      // Content fades in after clouds start moving
       const t2 = setTimeout(() => setContentVisible(true), 600);
       return () => { clearTimeout(t1); clearTimeout(t2); };
     } else {
@@ -40,12 +40,17 @@ export default function Dashboard() {
     }
   }
 
-  // Demo recent sessions
-  const recentSessions = [
-    { id: "abc123", date: "Apr 18, 2026", duration: "12m 34s", captions: 28 },
-    { id: "def456", date: "Apr 17, 2026", duration: "8m 12s", captions: 15 },
-    { id: "ghi789", date: "Apr 16, 2026", duration: "23m 01s", captions: 52 },
-  ];
+  function rejoinSession(id: string) {
+    navigate(`/session/${id}`);
+  }
+
+  function formatDate(iso: string) {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
+        " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    } catch { return iso; }
+  }
 
   return (
     <div className="relative min-h-[calc(100vh-52px)] flex flex-col items-center justify-center px-4 py-12">
@@ -57,7 +62,6 @@ export default function Dashboard() {
         transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
         className="relative z-10 flex flex-col items-center text-center max-w-2xl mx-auto"
       >
-        {/* Nimbus glow behind CTA */}
         <div className="relative mb-8">
           <NimbusGlow size={350} color="gold" pulse className="-top-[120px] left-1/2 -translate-x-[175px]" />
 
@@ -69,7 +73,7 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* Start Session CTA — Moving Border Button */}
+        {/* Start Session CTA */}
         <MovingBorderButton onClick={startSession} className="mb-6">
           <svg className="w-5 h-5 mr-2 text-nimbus-gold" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
             <polygon points="5 3 19 12 5 21 5 3" />
@@ -98,36 +102,51 @@ export default function Dashboard() {
         transition={{ duration: 0.8, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
         className="relative z-10 w-full max-w-2xl mt-16"
       >
-        <h2 className="text-xs font-medium text-nimbus-mist uppercase tracking-wider mb-4">
-          Recent Sessions
-        </h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xs font-medium text-nimbus-mist uppercase tracking-wider">
+            Recent Sessions
+          </h2>
+          {recentSessions.length > 0 && (
+            <button
+              onClick={clearSessions}
+              className="text-[10px] text-nimbus-mist hover:text-nimbus-coral transition-colors"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
         <div className="space-y-3">
-          {recentSessions.map((s) => (
-            <SpotlightCard key={s.id} className="rounded-2xl cursor-pointer group">
-              <div className="flex items-center justify-between px-5 py-4">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-xl bg-nimbus-surface flex items-center justify-center">
-                    <svg className="w-5 h-5 text-nimbus-gold" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" />
+          {recentSessions.length === 0 ? (
+            <p className="text-sm text-nimbus-mist/50 italic text-center py-6">
+              No recent sessions yet. Start or join a session above.
+            </p>
+          ) : (
+            recentSessions.map((s) => (
+              <SpotlightCard key={s.roomId + s.joinedAt} className="rounded-2xl cursor-pointer group" onClick={() => rejoinSession(s.roomId)}>
+                <div className="flex items-center justify-between px-5 py-4">
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-nimbus-surface flex items-center justify-center">
+                      <svg className="w-5 h-5 text-nimbus-gold" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-nimbus-text group-hover:text-nimbus-gold transition-colors font-mono">
+                        {s.roomId}
+                      </p>
+                      <p className="text-xs text-nimbus-mist">{formatDate(s.joinedAt)}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-nimbus-teal font-medium">Rejoin</span>
+                    <svg className="w-4 h-4 text-nimbus-mist opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polyline points="9 18 15 12 9 6" />
                     </svg>
                   </div>
-                  <div>
-                    <p className="text-sm font-medium text-nimbus-text group-hover:text-nimbus-gold transition-colors">
-                      Session {s.id}
-                    </p>
-                    <p className="text-xs text-nimbus-mist">{s.date}</p>
-                  </div>
                 </div>
-                <div className="flex items-center gap-6 text-xs text-nimbus-mist">
-                  <span>{s.duration}</span>
-                  <span>{s.captions} captions</span>
-                  <svg className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
-                </div>
-              </div>
-            </SpotlightCard>
-          ))}
+              </SpotlightCard>
+            ))
+          )}
         </div>
       </motion.div>
     </div>
