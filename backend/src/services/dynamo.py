@@ -125,6 +125,7 @@ def list_room_connections(room_id: str) -> Iterable[str]:
             "KeyConditionExpression": "roomId = :r",
             "ExpressionAttributeValues": {":r": room_id},
             "ProjectionExpression": "connectionId",
+            "ConsistentRead": True,
         }
         if last_key is not None:
             kwargs["ExclusiveStartKey"] = last_key
@@ -148,6 +149,7 @@ def list_room_peers(room_id: str) -> Iterable[dict]:
             "KeyConditionExpression": "roomId = :r",
             "ExpressionAttributeValues": {":r": room_id},
             "ProjectionExpression": "connectionId, sessionId",
+            "ConsistentRead": True,
         }
         if last_key is not None:
             kwargs["ExclusiveStartKey"] = last_key

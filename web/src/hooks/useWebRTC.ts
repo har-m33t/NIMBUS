@@ -79,6 +79,10 @@ export function useWebRTC({ localStream, sendWebRtcSignal }: UseWebRTCArgs) {
     (remoteConnectionId: string, remoteSessionId: string): RTCPeerConnection => {
       const existing = pcsRef.current.get(remoteConnectionId);
       if (existing) {
+        // Null handlers before close so stale events don't kill the replacement PC
+        existing.onconnectionstatechange = null;
+        existing.onicecandidate = null;
+        existing.ontrack = null;
         existing.close();
         pcsRef.current.delete(remoteConnectionId);
       }

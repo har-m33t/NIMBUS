@@ -115,15 +115,14 @@ export default function Session() {
       switch (msg.event) {
         case "JOIN_ROOM": {
           const existingPeers = (msg.payload as { status: string; peers: PeerInfo[] }).peers || [];
+          console.log("[Session] JOIN_ROOM ack — existing peers:", existingPeers.length, existingPeers);
           existingPeers.forEach((peer) => startOffer(peer));
           break;
         }
         case "PEER_JOINED": {
-          // New peer will send us an SDP_OFFER via their JOIN_ROOM flow.
-          // Call startOffer as a fallback in case their offer is lost
-          // (e.g. localStream not ready on their side). startOffer checks
-          // for an existing PC and skips if negotiation is already in progress.
-          startOffer(msg.payload as PeerInfo);
+          // The joining peer initiates the offer via their JOIN_ROOM ack.
+          // We wait for their SDP_OFFER — no need to offer from our side.
+          console.log("[Session] PEER_JOINED — waiting for their offer:", msg.payload);
           break;
         }
         case "PEER_LEFT": {
