@@ -381,7 +381,7 @@ export default function Session() {
                 </div>
               </>
             ) : (
-              <VideoFeed stream={localStream} showOverlay={false} isTracking={!!localStream} />
+              <VideoFeed stream={localStream} showOverlay={aslEnabled} enabled={aslEnabled} />
             )}
 
             {/* Caption overlay INSIDE the video */}
