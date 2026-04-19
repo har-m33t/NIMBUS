@@ -35,6 +35,9 @@ export default function Session() {
   // Transcript accumulates all captions
   const [transcript, setTranscript] = useState<{ id: string; text: string; source: "STT" | "ASL"; speaker: string; timestamp: string }[]>([]);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const pendingTtsUrl = useRef<string | null>(null);
+  // iOS Safari blocks audio autoplay until first user gesture. Track unlock state.
+  const audioUnlockedRef = useRef(false);
 
   // Stable session ID for this browser tab
   const sessionId = useMemo(() => crypto.randomUUID(), []);
@@ -51,6 +54,29 @@ export default function Session() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     } catch { /* ignore */ }
   }, [roomId]);
+
+  // Unlock iOS audio autoplay on first user gesture, then play any queued URL.
+  useEffect(() => {
+    const unlock = () => {
+      if (audioUnlockedRef.current) return;
+      audioUnlockedRef.current = true;
+      const pending = pendingTtsUrl.current;
+      if (pending) {
+        pendingTtsUrl.current = null;
+        const audio = new Audio(pending);
+        ttsAudioRef.current = audio;
+        audio.play().catch(() => {});
+      }
+      document.removeEventListener("click", unlock);
+      document.removeEventListener("touchstart", unlock);
+    };
+    document.addEventListener("click", unlock, { once: true });
+    document.addEventListener("touchstart", unlock, { once: true });
+    return () => {
+      document.removeEventListener("click", unlock);
+      document.removeEventListener("touchstart", unlock);
+    };
+  }, []);
 
   // Local camera + mic
   const { stream: localStream, error: mediaError } = useLocalMedia(true);
@@ -105,8 +131,13 @@ export default function Session() {
         setTranscript((prev) => [...prev, { id: entry.id, text: entry.text, source: "ASL", speaker: entry.isMine ? (user?.displayName || "You") : "Participant", timestamp: entry.timestamp }]);
         if (msg.payload.ssmlUrl) {
           if (ttsAudioRef.current) ttsAudioRef.current.pause();
-          ttsAudioRef.current = new Audio(msg.payload.ssmlUrl);
-          ttsAudioRef.current.play().catch(() => {});
+          if (audioUnlockedRef.current) {
+            ttsAudioRef.current = new Audio(msg.payload.ssmlUrl);
+            ttsAudioRef.current.play().catch(() => {});
+          } else {
+            // Queue for when the user first taps/clicks (iOS autoplay restriction)
+            pendingTtsUrl.current = msg.payload.ssmlUrl;
+          }
         }
         return;
       }

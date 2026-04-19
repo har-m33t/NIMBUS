@@ -903,6 +903,12 @@ Resources:
           - Id: ExpireAudioAfter1Day
             Status: Enabled
             ExpirationInDays: 1
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: [GET, HEAD]
+            AllowedOrigins: ["*"]
+            MaxAge: 3600
 
   ConfigBucket:
     Type: AWS::S3::Bucket
