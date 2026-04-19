@@ -1,0 +1,2 @@
+timestamp,model_revision,wer,cer,endpoint,dataset_size,notes
+2026-04-18T21:49:08Z,bootstrap-baseline,0.000000,0.000000,mock://prototype-decoder,60,bootstrap baseline

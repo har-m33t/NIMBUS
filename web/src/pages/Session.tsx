@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.tsx";
 import { useSettings } from "../context/SettingsContext.tsx";
+import { useTelemetry } from "../context/TelemetryContext.tsx";
 import { useLocalMedia } from "../hooks/useLocalMedia.ts";
 import {
   useSessionSocket,
@@ -19,6 +20,7 @@ export default function Session() {
   const { roomId = "unknown" } = useParams<{ roomId: string }>();
   const { user, idToken } = useAuth();
   const { settings } = useSettings();
+  const { addLog } = useTelemetry();
   const navigate = useNavigate();
   const [panelOpen, setPanelOpen] = useState(true);
   const [captionMode, setCaptionMode] = useState<"off" | "asl" | "stt">(() =>
@@ -79,7 +81,17 @@ export default function Session() {
   // Handle inbound WebSocket messages
   const onMessage = useCallback(
     (msg: InboundSignal) => {
+      if (msg.type === "EMOTION") {
+        addLog("REKOGNITION", `Emotion Override: ${msg.payload.emotion}`);
+        return;
+      }
+
       if (msg.type === "CAPTION") {
+        addLog("BEDROCK", `NLP Generation: ${msg.payload.text}`);
+        if (msg.payload.ssmlUrl) {
+          addLog("POLLY", "Neural Voice Audio URL Ready");
+        }
+
         const entry = {
           id: `${msg.sequenceNumber}-${msg.timestamp}`,
           text: msg.payload.text,
@@ -121,7 +133,7 @@ export default function Session() {
         }
       }
     },
-    [sessionId, startOffer, removePeer, handleSignal],
+    [sessionId, startOffer, removePeer, handleSignal, addLog],
   );
 
   // WebSocket connection
@@ -129,6 +141,7 @@ export default function Session() {
     token: idToken,
     sessionId,
     roomId,
+    userId: user?.id,
     onMessage,
   });
 
@@ -143,6 +156,15 @@ export default function Session() {
       setTranscript((prev) => [...prev, { id: caption.id, text: caption.text, source: "STT" as const, speaker: user?.displayName || "You", timestamp: caption.timestamp }]);
     }, []),
   });
+
+  // Wraps `send` so every INFER message carries the current targetLanguage + telemetry log.
+  const sendInfer = useCallback(
+    (inferPayload: Record<string, unknown>) => {
+      addLog("WEBSOCKET_TX", "Payload: AWS Bedrock Ingestion");
+      send({ ...inferPayload, targetLanguage });
+    },
+    [send, targetLanguage, addLog],
+  );
 
   // Leave room — single handler for both "Leave Room" buttons
   const handleLeaveRoom = useCallback(() => {
