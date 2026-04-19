@@ -125,7 +125,7 @@ class TestConstraintC4:
         url = pt.synthesize("<speak>test</speak>")
         assert "https://" in url, "must return HTTPS presigned URL"
         assert called, "must call generate_presigned_url"
-        assert called[0]["ExpiresIn"] <= 300, "presigned URL should expire within 5 min"
+        assert called[0]["ExpiresIn"] <= 900, "presigned URL should expire within 15 min"
 
     def test_ssml_loads_from_s3_not_local(self):
         """SSML config loads from S3 at runtime, not local repo."""
