@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useMediaPipeTracking } from "../../hooks/useMediaPipeTracking.ts";
+import { useGlossInference } from "../../hooks/useGlossInference.ts";
 import { drawSkeleton } from "../../lib/mediapipe/drawOverlay.ts";
 
 export default function VideoFeed({
@@ -7,11 +8,13 @@ export default function VideoFeed({
   showOverlay = true,
   enabled = false,
   isTracking: isTrackingProp = false,
+  onGloss,
 }: {
   stream?: MediaStream | null;
   showOverlay?: boolean;
   enabled?: boolean;
   isTracking?: boolean;
+  onGloss?: (token: string) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -22,9 +25,16 @@ export default function VideoFeed({
     }
   }, [stream]);
 
-  const { isTracking, rawLandmarks, error } = useMediaPipeTracking({
+  const { isTracking, hand21, rawLandmarks, error } = useMediaPipeTracking({
     video: videoRef.current,
     enabled: enabled && !!stream,
+    targetFps: 10,
+  });
+
+  const { currentToken, top3, error: inferError } = useGlossInference({
+    hand21,
+    enabled: enabled && !!stream,
+    onGloss,
   });
 
   // Paint the skeleton every time the hook emits new landmarks.
@@ -103,9 +113,31 @@ export default function VideoFeed({
           </div>
         )}
 
-        {error && (
+        {(error || inferError) && (
           <div className="absolute bottom-3 left-3 text-xs text-nimbus-coral bg-nimbus-surface/70 px-2 py-1 rounded-md backdrop-blur-sm">
-            Tracking error: {error}
+            Tracking error: {error || inferError}
+          </div>
+        )}
+
+        {currentToken && enabled && (
+          <div className="absolute bottom-3 right-3 bg-nimbus-surface/70 px-3 py-2 rounded-lg backdrop-blur-sm border border-nimbus-teal/30 min-w-[120px]">
+            <div className="text-sm font-semibold text-nimbus-teal mb-1">
+              {currentToken.toUpperCase()}
+            </div>
+            {top3.length > 0 && (
+              <ul className="space-y-0.5">
+                {top3.map((p, i) => (
+                  <li key={i} className="flex items-center justify-between gap-2 text-xs">
+                    <span className={i === 0 ? "text-nimbus-teal" : "text-nimbus-mist"}>
+                      {p.label}
+                    </span>
+                    <span className="text-nimbus-mist/70 font-mono tabular-nums">
+                      {(p.confidence * 100).toFixed(1)}%
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 

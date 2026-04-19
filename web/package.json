@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
 "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "postinstall": "node -e \"const fs=require('fs'),p='node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep';if(fs.existsSync(p+'.wasm')){fs.copyFileSync(p+'.wasm','public/ort-wasm-simd-threaded.jsep.wasm');fs.copyFileSync(p+'.mjs','public/ort-wasm-simd-threaded.jsep.mjs')}\""
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.2",

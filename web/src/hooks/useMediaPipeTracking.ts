@@ -3,29 +3,28 @@ import {
   createLandmarkers,
   type Landmarkers,
 } from "../lib/mediapipe/landmarkers";
-import { sliceTo55Points } from "../lib/mediapipe/slicer";
+import { normalizeHandLandmarks } from "../lib/mediapipe/slicer";
 import type {
   Landmark3D,
   RawLandmarks,
-  Sliced55,
+  Hand21,
 } from "../lib/mediapipe/types";
 
 export interface UseMediaPipeTrackingOptions {
   video: HTMLVideoElement | null;
   enabled: boolean;
-  targetFps?: number; // defaults to 10 to match PROTOCOLS §3.1
+  targetFps?: number;
 }
 
 export interface MediaPipeTrackingState {
   isTracking: boolean;
-  keypoints55: Sliced55 | null;
+  hand21: Hand21 | null;
   rawLandmarks: RawLandmarks | null;
   lastUpdateMs: number | null;
   error: string | null;
 }
 
 type NormalizedLandmark = { x: number; y: number; z: number; visibility?: number };
-type HandedCategory = { categoryName?: string; displayName?: string };
 
 function toLandmark3D(src: NormalizedLandmark[] | undefined): Landmark3D[] | null {
   if (!src || src.length === 0) return null;
@@ -37,26 +36,6 @@ function toLandmark3D(src: NormalizedLandmark[] | undefined): Landmark3D[] | nul
   }));
 }
 
-// Hand landmarker returns up to `numHands` hands in detection order. Use the
-// handedness label to route each result to left or right.
-function partitionHands(
-  landmarks: NormalizedLandmark[][] | undefined,
-  handedness: HandedCategory[][] | undefined,
-): { leftHand: Landmark3D[] | null; rightHand: Landmark3D[] | null } {
-  let leftHand: Landmark3D[] | null = null;
-  let rightHand: Landmark3D[] | null = null;
-  if (!landmarks || !handedness) return { leftHand, rightHand };
-
-  for (let i = 0; i < landmarks.length; i++) {
-    const label = handedness[i]?.[0]?.categoryName ?? handedness[i]?.[0]?.displayName;
-    const pts = toLandmark3D(landmarks[i]);
-    if (!pts) continue;
-    if (label === "Left") leftHand = pts;
-    else if (label === "Right") rightHand = pts;
-  }
-  return { leftHand, rightHand };
-}
-
 export function useMediaPipeTracking({
   video,
   enabled,
@@ -64,7 +43,7 @@ export function useMediaPipeTracking({
 }: UseMediaPipeTrackingOptions): MediaPipeTrackingState {
   const [state, setState] = useState<MediaPipeTrackingState>({
     isTracking: false,
-    keypoints55: null,
+    hand21: null,
     rawLandmarks: null,
     lastUpdateMs: null,
     error: null,
@@ -111,21 +90,17 @@ export function useMediaPipeTracking({
       lastEmitRef.current = now;
 
       const ts = Math.floor(now);
-      const poseResult = lm.pose.detectForVideo(video, ts);
       const handResult = lm.hand.detectForVideo(video, ts);
 
-      const pose = toLandmark3D(poseResult.landmarks?.[0]);
-      const { leftHand, rightHand } = partitionHands(
-        handResult.landmarks,
-        handResult.handednesses,
-      );
+      // Take the first detected hand
+      const hand = toLandmark3D(handResult.landmarks?.[0]);
 
-      const raw: RawLandmarks = { pose, leftHand, rightHand };
-      const sliced = sliceTo55Points(raw);
+      const raw: RawLandmarks = { hand };
+      const normalized = normalizeHandLandmarks(raw);
 
       setState({
-        isTracking: pose !== null || leftHand !== null || rightHand !== null,
-        keypoints55: sliced,
+        isTracking: hand !== null,
+        hand21: normalized,
         rawLandmarks: raw,
         lastUpdateMs: ts,
         error: null,

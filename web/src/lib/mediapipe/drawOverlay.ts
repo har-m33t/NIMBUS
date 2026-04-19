@@ -9,14 +9,6 @@ const HAND_CONNECTIONS: Array<[number, number]> = [
   [13, 17], [0, 17], [17, 18], [18, 19], [19, 20],
 ];
 
-// Upper-body pose connections (indices 0..12 only).
-const POSE_UPPER_CONNECTIONS: Array<[number, number]> = (
-  [
-    [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
-    [11, 23], [12, 24], [11, 0], [12, 0],
-  ] as Array<[number, number]>
-).filter(([a, b]) => a <= 12 && b <= 12);
-
 export interface DrawOptions {
   mirrored?: boolean; // true if the video is rendered with scaleX(-1)
   strokeStyle?: string;
@@ -68,9 +60,7 @@ export function drawSkeleton(
     }
   };
 
-  drawSet(raw.pose?.slice(0, 13) ?? null, POSE_UPPER_CONNECTIONS);
-  drawSet(raw.leftHand, HAND_CONNECTIONS);
-  drawSet(raw.rightHand, HAND_CONNECTIONS);
+  drawSet(raw.hand, HAND_CONNECTIONS);
 
   ctx.restore();
 }

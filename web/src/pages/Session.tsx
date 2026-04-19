@@ -52,6 +52,9 @@ export default function Session() {
   // Local camera + mic
   const { stream: localStream, error: mediaError } = useLocalMedia(true);
 
+  const aslEnabled = captionMode === "asl";
+  const seqRef = useRef(0);
+
   // Ref to hold sendWebRtcSignal once socket is ready
   const sendSignalRef = useRef<(signal: "SDP_OFFER" | "SDP_ANSWER" | "ICE_CANDIDATE", target: string, payload: Record<string, unknown>) => boolean>(
     () => false,
@@ -150,6 +153,19 @@ export default function Session() {
     }
     navigate("/");
   }, [send, sessionId, roomId, cleanupWebRTC, localStream, navigate]);
+
+  // Send edge-inferred gloss token to the backend over WebSocket
+  const handleGloss = useCallback((token: string) => {
+    seqRef.current += 1;
+    send({
+      action: "INFER",
+      sessionId,
+      roomId,
+      timestamp: new Date().toISOString(),
+      sequenceNumber: seqRef.current,
+      payload: { token },
+    });
+  }, [send, sessionId, roomId]);
 
   // Build participants list — show display name, not raw ID
   const participants = [
@@ -381,7 +397,7 @@ export default function Session() {
                 </div>
               </>
             ) : (
-              <VideoFeed stream={localStream} showOverlay={aslEnabled} enabled={aslEnabled} />
+              <VideoFeed stream={localStream} showOverlay={aslEnabled} enabled={aslEnabled} onGloss={handleGloss} />
             )}
 
             {/* Caption overlay INSIDE the video */}
