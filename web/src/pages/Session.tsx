@@ -26,6 +26,7 @@ export default function Session() {
   const [captionMode, setCaptionMode] = useState<"off" | "asl" | "stt">(() =>
     settings.aslEnabled ? "asl" : "off"
   );
+  const [targetLanguage] = useState("en"); // default; re-add dropdown UI to change
   const [viewMode, setViewMode] = useState<"speaker" | "gallery">("speaker");
   const [pinnedId, setPinnedId] = useState<string | null>(null);
 
@@ -180,11 +181,12 @@ export default function Session() {
       action: "INFER",
       sessionId,
       roomId,
+      targetLanguage,
       timestamp: new Date().toISOString(),
       sequenceNumber: seqRef.current,
       payload: { token },
     });
-  }, [send, sessionId, roomId, addLog]);
+  }, [send, sessionId, roomId, targetLanguage, addLog]);
 
   // Build participants list — show display name, not raw ID
   const participants = [
