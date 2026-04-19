@@ -29,3 +29,6 @@ lambda_unzipped/
 *.json
 *.npz
 *.ini
+
+# Git worktrees
+.worktrees/

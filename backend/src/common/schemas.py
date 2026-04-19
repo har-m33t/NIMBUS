@@ -33,11 +33,14 @@ class Keypoints(BaseModel):
 
 class InferPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    keypoints: Keypoints
+    keypoints: Keypoints | None = None
     includeFaceCrop: bool = False
     # JPEG face crop, base64-encoded, max 640×480px (PROTOCOLS.md §3.2).
     # Present only when includeFaceCrop=true, once per 10 frames.
     faceCropBase64: str | None = None
+    # Edge-inference mode: browser ONNX model sends a single gloss token
+    # directly instead of raw keypoints. When present, SageMaker is bypassed.
+    token: str | None = None
 
 
 class InferMessage(BaseModel):

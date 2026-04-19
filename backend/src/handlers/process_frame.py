@@ -1,7 +1,8 @@
 """NIMBUS_PROD_ProcessFrame — AI pipeline orchestrator.
 
 Phases implemented:
-  1. Parse INFER, run SageMaker ASL inference, emit GLOSS.
+  1. Parse INFER, accept gloss token from browser edge-inference OR fall back to
+     SageMaker ASL inference, emit GLOSS.
   2. Sentence boundary detection (PROTOCOLS.md §2.2): flush glossBuffer on
      15 tokens / 3s elapsed / [EOS] token / 1.5s pause (SWEEP via EventBridge).
   3. Bedrock interpretation (gloss → English), raw-gloss fallback.
@@ -242,37 +243,51 @@ def handler(event: dict, _context: Any) -> dict:
 
     bind_session(msg.sessionId, msg.roomId)
 
-    if not _cold_start_checked.get("done"):
-        if not sagemaker_inference.is_in_service():
-            _emit_signal(event, connection_id, msg.sessionId, msg.roomId, "ENDPOINT_WARMING")
-            metrics.add_metric(name="EndpointWarming", unit=MetricUnit.Count, value=1)
+    # ── Edge-inference mode: browser ONNX sent a single gloss token directly ──
+    if msg.payload.token:
+        tokens = [msg.payload.token]
+        confidence = 1.0
+        logger.info("edge token received", extra={"token": msg.payload.token})
+        _emit_gloss(event, connection_id, msg, tokens, confidence)
+        metrics.add_metric(name="GlossEventsEmitted", unit=MetricUnit.Count, value=1)
+        metrics.add_metric(name="EdgeInferTokens", unit=MetricUnit.Count, value=1)
+    else:
+        # ── Legacy SageMaker mode: raw keypoints → model inference ──
+        if not msg.payload.keypoints:
+            logger.warning("INFER message has neither token nor keypoints")
+            return {"statusCode": 400, "body": "missing token or keypoints"}
+
+        if not _cold_start_checked.get("done"):
+            if not sagemaker_inference.is_in_service():
+                _emit_signal(event, connection_id, msg.sessionId, msg.roomId, "ENDPOINT_WARMING")
+                metrics.add_metric(name="EndpointWarming", unit=MetricUnit.Count, value=1)
+                _cold_start_checked["done"] = True
+                return {"statusCode": 200}
             _cold_start_checked["done"] = True
+
+        t0 = time.perf_counter()
+        try:
+            result = sagemaker_inference.invoke(msg.payload.keypoints)
+        except SageMakerError as exc:
+            metrics.add_metric(name="SageMakerErrors", unit=MetricUnit.Count, value=1)
+            logger.exception("sagemaker invoke failed", extra={"stage": "sagemaker"})
+            _emit_error(
+                event, connection_id, msg.sessionId,
+                code="SAGEMAKER_INFERENCE_FAILED",
+                message=str(exc)[:200],
+                glossFallback="[UNKNOWN_SIGN]",
+            )
             return {"statusCode": 200}
-        _cold_start_checked["done"] = True
+        finally:
+            sm_ms = (time.perf_counter() - t0) * 1000
+            metrics.add_metric(name="SageMakerLatencyMs", unit=MetricUnit.Milliseconds, value=sm_ms)
 
-    t0 = time.perf_counter()
-    try:
-        result = sagemaker_inference.invoke(msg.payload.keypoints)
-    except SageMakerError as exc:
-        metrics.add_metric(name="SageMakerErrors", unit=MetricUnit.Count, value=1)
-        logger.exception("sagemaker invoke failed", extra={"stage": "sagemaker"})
-        _emit_error(
-            event, connection_id, msg.sessionId,
-            code="SAGEMAKER_INFERENCE_FAILED",
-            message=str(exc)[:200],
-            glossFallback="[UNKNOWN_SIGN]",
-        )
-        return {"statusCode": 200}
-    finally:
-        sm_ms = (time.perf_counter() - t0) * 1000
-        metrics.add_metric(name="SageMakerLatencyMs", unit=MetricUnit.Milliseconds, value=sm_ms)
+        tokens = result["tokens"]
+        confidence = result["confidence"]
+        logger.info("sagemaker invoked", extra={"stage": "sagemaker", "latencyMs": sm_ms, "tokenCount": len(tokens), "confidence": confidence})
 
-    tokens = result["tokens"]
-    confidence = result["confidence"]
-    logger.info("sagemaker invoked", extra={"stage": "sagemaker", "latencyMs": sm_ms, "tokenCount": len(tokens), "confidence": confidence})
-
-    _emit_gloss(event, connection_id, msg, tokens, confidence)
-    metrics.add_metric(name="GlossEventsEmitted", unit=MetricUnit.Count, value=1)
+        _emit_gloss(event, connection_id, msg, tokens, confidence)
+        metrics.add_metric(name="GlossEventsEmitted", unit=MetricUnit.Count, value=1)
 
     # Emotion detection — every FACE_CROP_INTERVAL frames (PROTOCOLS.md §3.2)
     if msg.sequenceNumber % FACE_CROP_INTERVAL == 0:
