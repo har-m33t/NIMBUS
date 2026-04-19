@@ -25,4 +25,7 @@ venv/
 
 lambda_unzipped/
 *.md
-
+*.bin
+*.json
+*.npz
+*.ini
