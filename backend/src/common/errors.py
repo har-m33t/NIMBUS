@@ -34,5 +34,10 @@ class RateLimitExceeded(PipelineError):
     fallback = None
 
 
+class TranslateError(PipelineError):
+    code = "TRANSLATE_FAILED"
+    fallback = None  # caller falls back to English text
+
+
 class SchemaValidationError(PipelineError):
     code = "SCHEMA_INVALID"

@@ -23,6 +23,7 @@ export default function Session() {
   const [panelOpen, setPanelOpen] = useState(true);
   const [aslEnabled, setAslEnabled] = useState(settings.aslEnabled);
   const [sttEnabled, setSttEnabled] = useState(false);
+  const [targetLanguage, setTargetLanguage] = useState("en");
 
   // Live captions shown in the overlay (last few)
   const [captions, setCaptions] = useState<{ id: string; text: string; source: "ASL" | "STT"; isMine: boolean; isFallback?: boolean; timestamp: string }[]>([]);
@@ -123,6 +124,7 @@ export default function Session() {
     token: idToken,
     sessionId,
     roomId,
+    userId: user?.id,
     onMessage,
   });
 
@@ -210,6 +212,22 @@ export default function Session() {
             STT
             {sttEnabled && <span className="w-1.5 h-1.5 rounded-full bg-nimbus-coral animate-pulse" />}
           </button>
+
+          {/* Output language selector */}
+          <label className="flex items-center gap-1.5">
+            <span className="sr-only">Output Language</span>
+            <select
+              value={targetLanguage}
+              onChange={(e) => setTargetLanguage(e.target.value)}
+              aria-label="Output Language"
+              className="px-2 py-1.5 rounded-lg text-xs font-medium bg-nimbus-surface text-nimbus-text border border-nimbus-mist/20 focus:outline-none focus:ring-1 focus:ring-nimbus-teal cursor-pointer"
+            >
+              <option value="en">English</option>
+              <option value="es">Spanish (es)</option>
+              <option value="fr">French (fr)</option>
+              <option value="ja">Japanese (ja)</option>
+            </select>
+          </label>
 
           {/* Toggle participants */}
           <button

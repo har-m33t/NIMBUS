@@ -28,7 +28,7 @@ from common.metrics import MetricUnit, metrics
 from common.schemas import InferMessage
 from common.session import append_gloss, drain_buffer, recent_captions, store_caption, update_emotion
 from common.ssml import build_ssml, default_voice, get_prosody_map
-from services import rekognition_emotion, sagemaker_inference
+from services import rekognition_emotion, sagemaker_inference, translate_service
 from services.bedrock_interpreter import safe_interpret
 from services.polly_tts import safe_synthesize
 
@@ -37,8 +37,10 @@ BUFFER_TOKEN_LIMIT = 15   # PROTOCOLS.md §2.2 rule 1
 ELAPSED_LIMIT_MS = 3000   # PROTOCOLS.md §2.2 rule 2 (3s since firstTokenAt)
 
 _BROADCAST_ARN = os.environ.get("BROADCAST_CAPTION_ARN", "")
+_USER_PREFS_TABLE = os.environ.get("USER_PREFS_TABLE", "")
 _lambda_cfg = Config(retries={"max_attempts": 1, "mode": "standard"})
 _lambda_client = None
+_prefs_table = None
 
 # Per-Lambda-instance emotion cache — avoids a DDB read on non-face-crop 10th
 # frames. Falls back to "CALM" until the first Rekognition detection.
@@ -50,6 +52,21 @@ def _get_lambda_client():
     if _lambda_client is None:
         _lambda_client = boto3.client("lambda", config=_lambda_cfg)
     return _lambda_client
+
+
+def _get_user_voice(user_id: str | None, fallback: str) -> str:
+    """Look up per-user preferred Polly voice from DynamoDB. Returns fallback on any error."""
+    if not user_id or not _USER_PREFS_TABLE:
+        return fallback
+    global _prefs_table
+    try:
+        if _prefs_table is None:
+            _prefs_table = boto3.resource("dynamodb").Table(_USER_PREFS_TABLE)
+        resp = _prefs_table.get_item(Key={"userId": user_id})
+        return resp.get("Item", {}).get("preferredVoiceId", fallback)
+    except Exception:
+        logger.exception("user preference lookup failed; using default voice")
+        return fallback
 
 
 def _invoke_broadcast(room_id: str, caption: dict) -> None:
@@ -170,6 +187,8 @@ def _flush_and_caption(
     session_id: str,
     room_id: str,
     emotion: str = "CALM",
+    target_language: str | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Drain the STATE buffer and emit CAPTION + NEW_CAPTION SIGNAL."""
     flush_start = time.perf_counter()
@@ -189,12 +208,25 @@ def _flush_and_caption(
         logger.warning("bedrock fallback", extra={"token_count": len(tokens)})
     logger.info("bedrock interpret", extra={"latencyMs": bedrock_ms, "usedFallback": used_fallback})
 
+    # Translate to target language when requested (fallback: keep English text).
+    effective_lang = target_language if (target_language and target_language != "en") else None
+    if effective_lang:
+        try:
+            text = translate_service.translate_text(text, effective_lang)
+            logger.info("translate applied", extra={"targetLanguage": effective_lang})
+        except Exception:
+            logger.exception("translate failed; delivering English caption")
+            effective_lang = None  # keep English voice
+
     ssml_url: str | None = None
     polly_start = time.perf_counter()
     try:
         prosody = get_prosody_map()
         ssml = build_ssml(text, emotion=emotion, prosody_map=prosody)
-        voice = default_voice(prosody)
+        if effective_lang:
+            voice = translate_service.voice_for_language(effective_lang)
+        else:
+            voice = _get_user_voice(user_id, default_voice(prosody))
         ssml_url = safe_synthesize(ssml, voice, session_id)
         polly_ms = (time.perf_counter() - polly_start) * 1000
         metrics.add_metric(name="PollyLatencyMs", unit=MetricUnit.Milliseconds, value=polly_ms)
@@ -308,7 +340,12 @@ def handler(event: dict, _context: Any) -> dict:
             buf_size = len(buf_attrs.get("glossBuffer", []))
             logger.info("gloss appended", extra={"bufferSize": buf_size})
             if _should_flush(buf_attrs, tokens):
-                _flush_and_caption(event, connection_id, msg.sessionId, msg.roomId, emotion=current_emotion)
+                _flush_and_caption(
+                    event, connection_id, msg.sessionId, msg.roomId,
+                    emotion=current_emotion,
+                    target_language=msg.targetLanguage,
+                    user_id=msg.userId,
+                )
         except Exception:
             logger.exception("session buffer / flush failed")
 

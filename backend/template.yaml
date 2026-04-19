@@ -604,6 +604,10 @@ Resources:
             - Effect: Allow
               Action: polly:SynthesizeSpeech
               Resource: "*"
+            # Translate — multilingual output (Global Accessibility Flex)
+            - Effect: Allow
+              Action: translate:TranslateText
+              Resource: "*"
             - Effect: Allow
               Action: execute-api:ManageConnections
               Resource: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${StageName}/*
@@ -651,6 +655,44 @@ Resources:
             - Effect: Allow
               Action: execute-api:ManageConnections
               Resource: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/${StageName}/*
+
+  # ── HTTP API for user preferences (POST /preferences) ───────────────────────
+
+  PreferencesHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+
+  PreferencesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub NIMBUS_${Environment}_SavePreferences
+      Handler: handlers.preferences.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: 128
+      Timeout: 10
+      Description: "POST /preferences — save per-user Polly voice preference to DynamoDB"
+      Events:
+        SavePreferences:
+          Type: HttpApi
+          Properties:
+            Path: /preferences
+            Method: POST
+            ApiId: !Ref PreferencesHttpApi
+        PreferencesPreflight:
+          Type: HttpApi
+          Properties:
+            Path: /preferences
+            Method: OPTIONS
+            ApiId: !Ref PreferencesHttpApi
 
   WarmEndpointFunction:
     Type: AWS::Serverless::Function
@@ -1140,6 +1182,14 @@ Outputs:
     Condition: DeployMediasoup
     Description: Mediasoup SFU Elastic IP (announce this to browser clients).
     Value: !Ref MediasoupEIP
+
+  PreferencesApiUrl:
+    Description: >
+      [Frontend] HTTP endpoint for saving user voice preferences.
+      Set VITE_PREFERENCES_API_URL to this value in web/.env.local.
+    Value: !Sub https://${PreferencesHttpApi}.execute-api.${AWS::Region}.amazonaws.com/preferences
+    Export:
+      Name: !Sub NIMBUS-${Environment}-PreferencesApiUrl
 
   CognitoUserPoolId:
     Description: Cognito User Pool ID for frontend auth configuration.
