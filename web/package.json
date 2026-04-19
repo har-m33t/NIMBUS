@@ -6,20 +6,28 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+"test": "vitest",
+    "test:run": "vitest run",
+    "postinstall": "node -e \"const fs=require('fs'),p='node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep';if(fs.existsSync(p+'.wasm')){fs.copyFileSync(p+'.wasm','public/ort-wasm-simd-threaded.jsep.wasm');fs.copyFileSync(p+'.mjs','public/ort-wasm-simd-threaded.jsep.mjs')}\""
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.2",
+    "@types/jsdom": "^21.1.7",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "jsdom": "^25.0.1",
     "tailwindcss": "^4.2.2",
     "typescript": "~6.0.2",
-    "vite": "^8.0.4"
+    "vite": "^8.0.4",
+"vitest": "^4.1.4"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.34",
     "amazon-cognito-identity-js": "^6.3.16",
     "framer-motion": "^12.38.0",
+    "onnxruntime-web": "^1.24.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.14.1"
