@@ -87,7 +87,7 @@ def try_acquire() -> bool:
 
     try:
         t.update_item(
-            Key={"sessionId": BUCKET_PK, "timestamp": SORT_KEY},
+            Key={"sessionId": BUCKET_PK, _SK: SORT_KEY},
             UpdateExpression="SET tokens = :t, lastRefillMs = :n",
             ConditionExpression="lastRefillMs = :prev",
             ExpressionAttributeValues={

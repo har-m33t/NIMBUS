@@ -24,11 +24,16 @@ _CACHE: dict[str, Any] | None = None
 
 
 def _load_from_s3() -> dict[str, Any]:
-    bucket = os.environ["CONFIG_BUCKET"]
-    key = os.environ.get("PROSODY_CONFIG_KEY", "ssml_prosody_map.json")
-    s3 = boto3.client("s3")
-    obj = s3.get_object(Bucket=bucket, Key=key)
-    return json.loads(obj["Body"].read())
+    try:
+        bucket = os.environ["CONFIG_BUCKET"]
+        key = os.environ.get("PROSODY_CONFIG_KEY", "ssml_prosody_map.json")
+        s3 = boto3.client("s3")
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        return json.loads(obj["Body"].read())
+    except Exception:
+        import pathlib
+        local = pathlib.Path(__file__).parent.parent / "config" / "ssml_prosody_map.json"
+        return json.loads(local.read_text())
 
 
 def get_prosody_map() -> dict[str, Any]:

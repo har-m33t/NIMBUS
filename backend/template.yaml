@@ -669,6 +669,7 @@ Resources:
       Environment:
         Variables:
           SWEEP_PAUSE_MS: "1500"
+          APIGW_MANAGEMENT_ENDPOINT: !Sub https://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
       Events:
         SweepSchedule:
           Type: Schedule

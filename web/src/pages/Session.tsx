@@ -414,6 +414,13 @@ export default function Session() {
               <VideoFeed stream={localStream} showOverlay={aslEnabled} enabled={aslEnabled} onGloss={handleGloss} />
             )}
 
+            {/* Hidden VideoFeed keeps the ONNX worker + MediaPipe running during calls */}
+            {aslEnabled && hasRemote && (
+              <div className="hidden" aria-hidden="true">
+                <VideoFeed stream={localStream} showOverlay={false} enabled={true} onGloss={handleGloss} />
+              </div>
+            )}
+
             {/* Caption overlay INSIDE the video */}
             <div
               className={`absolute left-0 right-0 z-20 px-4 py-2 pointer-events-none ${
