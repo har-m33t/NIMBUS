@@ -14,7 +14,7 @@ from services import dynamo
 from services.response import bad_request, ok, server_error
 
 _log = logging.getLogger()
-_log.setLevel(logging.INFO)
+_log.setLevel(logging.DEBUG)
 
 _ROOM_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
@@ -43,6 +43,11 @@ def handler(event, _context):
     user_id = authorizer.get("userId", "anonymous")
     display_name = authorizer.get("displayName", "")
 
+    _log.info(
+        "WS_CONNECT connectionId=%s queryParams=%s authorizer_userId=%s authorizer_displayName=%s",
+        connection_id, str(params), user_id, display_name,
+    )
+
     if not _valid_uuid(session_id):
         _log.warning("Rejecting connect — bad sessionId: %r", session_id)
         return bad_request("sessionId must be a UUID v4")
@@ -52,7 +57,9 @@ def handler(event, _context):
 
     try:
         dynamo.put_session_state(session_id, connection_id, room_id or None)
+        _log.info("WS_CONNECT put_session_state OK sessionId=%s connectionId=%s roomId=%s", session_id, connection_id, room_id or "(none)")
         dynamo.put_connection_index(connection_id, session_id, room_id or None)
+        _log.info("WS_CONNECT put_connection_index OK connectionId=%s sessionId=%s roomId=%s", connection_id, session_id, room_id or "(none)")
     except Exception:  # noqa: BLE001 — surface as 500 so API GW rejects connect
         _log.exception("Failed to persist session state")
         return server_error("Failed to initialize session")

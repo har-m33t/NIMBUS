@@ -22,7 +22,7 @@ from services.response import bad_request, ok, server_error
 from services.websocket import broadcast, post_to_connection
 
 _log = logging.getLogger()
-_log.setLevel(logging.INFO)
+_log.setLevel(logging.DEBUG)
 
 _ROOM_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
@@ -42,6 +42,11 @@ def handler(event, _context):
     session_id = (body.get("sessionId") or "").strip()
     room_id = (body.get("roomId") or "").strip()
 
+    _log.info(
+        "JOIN_ROOM received sessionId=%s roomId=%s connectionId=%s body=%s",
+        session_id, room_id, connection_id, json.dumps(body)[:500],
+    )
+
     if not session_id:
         return bad_request("sessionId is required")
     if not _ROOM_ID_RE.match(room_id):
@@ -52,10 +57,21 @@ def handler(event, _context):
         # This handles React StrictMode double-mounts and reconnections where the old
         # WebSocket hasn't sent $disconnect yet but a new connection is already joining.
         all_peers = list(dynamo.list_room_peers(room_id))
+        _log.info(
+            "JOIN_ROOM roomId=%s peers_in_room=%d peers=%s",
+            room_id, len(all_peers), str(all_peers),
+        )
+
         stale = [
             p for p in all_peers
             if p.get("sessionId") == session_id and p["connectionId"] != connection_id
         ]
+        if stale:
+            _log.info(
+                "JOIN_ROOM removing stale peers sessionId=%s stale=%s",
+                session_id,
+                json.dumps([p["connectionId"] for p in stale]),
+            )
         for p in stale:
             dynamo.leave_room(room_id, p["connectionId"])
             _log.info("JOIN_ROOM cleaned stale conn=%s for session=%s", p["connectionId"], session_id)
@@ -68,6 +84,10 @@ def handler(event, _context):
             if p["connectionId"] != connection_id
             and p.get("sessionId") != session_id  # exclude stale same-session entries
         ]
+        _log.info(
+            "JOIN_ROOM existing_peers_for_ack sessionId=%s roomId=%s count=%d peers=%s",
+            session_id, room_id, len(existing), str(existing),
+        )
     except Exception:  # noqa: BLE001
         _log.exception("JOIN_ROOM failed for %s / %s", session_id, room_id)
         return server_error("Failed to join room")
@@ -79,23 +99,40 @@ def handler(event, _context):
         "roomId": room_id,
         "payload": {"status": "joined", "peers": existing},
     }
-    post_to_connection(connection_id, ack)
+    _log.info(
+        "JOIN_ROOM sending ack connectionId=%s payload=%s",
+        connection_id, json.dumps(ack)[:500],
+    )
+    ack_sent = post_to_connection(connection_id, ack)
+    _log.info(
+        "JOIN_ROOM ack delivery connectionId=%s success=%s",
+        connection_id, ack_sent,
+    )
 
     if existing:
-        broadcast(
-            [p["connectionId"] for p in existing],
-            {
-                "type": "SIGNAL",
-                "event": "PEER_JOINED",
+        peer_joined_payload = {
+            "type": "SIGNAL",
+            "event": "PEER_JOINED",
+            "sessionId": session_id,
+            "roomId": room_id,
+            "payload": {
+                "connectionId": connection_id,
                 "sessionId": session_id,
-                "roomId": room_id,
-                "payload": {
-                    "connectionId": connection_id,
-                    "sessionId": session_id,
-                },
             },
+        }
+        broadcast_targets = [p["connectionId"] for p in existing]
+        _log.info(
+            "JOIN_ROOM broadcasting PEER_JOINED sessionId=%s roomId=%s targets=%s payload=%s",
+            session_id, room_id,
+            json.dumps(broadcast_targets),
+            json.dumps(peer_joined_payload)[:500],
+        )
+        stale_after_broadcast = broadcast(broadcast_targets, peer_joined_payload)
+        _log.info(
+            "JOIN_ROOM PEER_JOINED broadcast done roomId=%s targets=%d stale=%s",
+            room_id, len(broadcast_targets), str(stale_after_broadcast),
         )
 
-    _log.info("JOIN_ROOM sessionId=%s roomId=%s peers=%d",
+    _log.info("JOIN_ROOM complete sessionId=%s roomId=%s peers=%d",
               session_id, room_id, len(existing))
     return ok()

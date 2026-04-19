@@ -27,16 +27,23 @@ def _client(endpoint: str | None = None):
 
 def post_to_connection(connection_id: str, payload: dict) -> bool:
     """Send one payload. Returns False if the connection is gone."""
+    data = json.dumps(payload).encode("utf-8")
+    payload_preview = data[:200].decode("utf-8", errors="replace")
+    _log.info("post_to_connection target=%s payload_preview=%s", connection_id, payload_preview)
     try:
         _client().post_to_connection(
             ConnectionId=connection_id,
-            Data=json.dumps(payload).encode("utf-8"),
+            Data=data,
         )
+        _log.info("post_to_connection delivered target=%s", connection_id)
         return True
     except ClientError as err:
         code = err.response.get("Error", {}).get("Code")
         if code == "GoneException":
-            _log.info("Dropping stale connection %s", connection_id)
+            _log.info(
+                "post_to_connection GoneException target=%s — connection is stale, payload_preview=%s",
+                connection_id, payload_preview,
+            )
             return False
         _log.exception("PostToConnection failed for %s", connection_id)
         raise
@@ -44,8 +51,18 @@ def post_to_connection(connection_id: str, payload: dict) -> bool:
 
 def broadcast(connection_ids: Iterable[str], payload: dict) -> list[str]:
     """Send payload to every connection. Returns the list of stale connectionIds."""
+    targets = list(connection_ids)
+    payload_preview = json.dumps(payload)[:200]
+    _log.info("broadcast total_targets=%d payload_preview=%s", len(targets), payload_preview)
     stale: list[str] = []
-    for cid in connection_ids:
+    succeeded: list[str] = []
+    for cid in targets:
         if not post_to_connection(cid, payload):
             stale.append(cid)
+        else:
+            succeeded.append(cid)
+    _log.info(
+        "broadcast complete total=%d succeeded=%d stale=%d succeeded_ids=%s stale_ids=%s",
+        len(targets), len(succeeded), len(stale), str(succeeded), str(stale),
+    )
     return stale
