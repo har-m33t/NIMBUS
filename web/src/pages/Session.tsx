@@ -421,7 +421,7 @@ export default function Session() {
 
             {/* Hidden VideoFeed keeps the ONNX worker + MediaPipe running during calls */}
             {aslEnabled && hasRemote && (
-              <div className="hidden" aria-hidden="true">
+              <div className="absolute opacity-0 pointer-events-none w-px h-px overflow-hidden" aria-hidden="true">
                 <VideoFeed stream={localStream} showOverlay={false} enabled={true} onGloss={handleGloss} />
               </div>
             )}

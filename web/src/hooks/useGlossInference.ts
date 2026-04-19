@@ -3,6 +3,7 @@ import type { Hand21 } from "../lib/mediapipe/types";
 import { HAND_FEATURE_COUNT } from "../lib/mediapipe/types";
 
 const DEBOUNCE_MS = 1000;
+const INFER_INTERVAL_MS = 1000; // classify at most once per second
 
 export interface Prediction {
   label: string;
@@ -50,6 +51,7 @@ export function useGlossInference({
   const workerRef = useRef<Worker | null>(null);
   const lastTokenRef = useRef<string | null>(null);
   const lastTokenTimeRef = useRef<number>(0);
+  const lastInferRef = useRef<number>(0);
   const inferringRef = useRef(false);
   const handPresentRef = useRef(false);
   const onGlossRef = useRef(onGloss);
@@ -64,6 +66,7 @@ export function useGlossInference({
       }
       lastTokenRef.current = null;
       lastTokenTimeRef.current = 0;
+      lastInferRef.current = 0;
       inferringRef.current = false;
       setState({ currentToken: null, top3: [], inferring: false, error: null });
       return;
@@ -112,6 +115,8 @@ export function useGlossInference({
 
   // Send each frame to the worker
   const pushFrame = useCallback((frame: Hand21) => {
+    const now = performance.now();
+    if (now - lastInferRef.current < INFER_INTERVAL_MS) return;
     if (inferringRef.current || !workerRef.current) return;
 
     // Skip if hand is all zeros (no detection)
@@ -121,6 +126,7 @@ export function useGlossInference({
     }
     if (allZero) return;
 
+    lastInferRef.current = now;
     inferringRef.current = true;
     setState((s) => ({ ...s, inferring: true }));
 
