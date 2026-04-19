@@ -265,9 +265,22 @@ function useCognitoAuth(): AuthState {
 
       const data = await resp.json();
       const idTokenJwt = data.id_token as string;
+      const accessTokenJwt = data.access_token as string;
+      const refreshToken = data.refresh_token as string;
 
       // Decode the ID token payload to extract user info
       const payload = JSON.parse(atob(idTokenJwt.split(".")[1]));
+      const username = payload.sub as string;
+
+      // Persist tokens using the Cognito SDK's localStorage key format so that
+      // getCurrentUser().getSession() can restore the session after page navigation.
+      const prefix = `CognitoIdentityServiceProvider.${clientId}`;
+      localStorage.setItem(`${prefix}.LastAuthUser`, username);
+      localStorage.setItem(`${prefix}.${username}.idToken`, idTokenJwt);
+      localStorage.setItem(`${prefix}.${username}.accessToken`, accessTokenJwt);
+      if (refreshToken) localStorage.setItem(`${prefix}.${username}.refreshToken`, refreshToken);
+      localStorage.setItem(`${prefix}.${username}.clockDrift`, "0");
+
       setUser({
         id: payload.sub,
         email: payload.email || "",
