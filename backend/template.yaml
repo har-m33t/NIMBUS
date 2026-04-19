@@ -99,6 +99,94 @@ Globals:
 
 Resources:
 
+  # ── Cognito User Pool (Authentication) ────────────────────────────────────────
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub NIMBUS_${Environment}_UserPool
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+        - Name: name
+          Required: false
+          Mutable: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      UserPoolAddOns:
+        AdvancedSecurityMode: "OFF"
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub NIMBUS_${Environment}_WebClient
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      SupportedIdentityProviders:
+        - COGNITO
+
+  # ── WebSocket Lambda Authorizer ──────────────────────────────────────────────
+
+  WsAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub NIMBUS_${Environment}_WS_Authorizer
+      Handler: handlers.ws_authorizer.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: 128
+      Timeout: 5
+      Description: >
+        WebSocket $connect authorizer — validates Cognito JWT from
+        query string ?token=<idToken> and returns IAM policy.
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_REGION: !Ref AWS::Region
+
+  WsAuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WsAuthorizerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*
+
+  WebSocketAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref WebSocketApi
+      AuthorizerType: REQUEST
+      AuthorizerUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsAuthorizerFunction.Arn}/invocations
+      IdentitySource:
+        - route.request.querystring.token
+      Name: CognitoJwtAuthorizer
+
   # ── WebSocket API (PROTOCOLS.md §1, §5.2) ───────────────────────────────────
 
   WebSocketApi:
@@ -113,7 +201,8 @@ Resources:
     Properties:
       ApiId: !Ref WebSocketApi
       RouteKey: $connect
-      AuthorizationType: NONE
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref WebSocketAuthorizer
       Target: !Sub integrations/${ConnectIntegration}
 
   DisconnectRoute:
@@ -881,3 +970,15 @@ Outputs:
     Condition: DeployMediasoup
     Description: Mediasoup SFU Elastic IP (announce this to browser clients).
     Value: !Ref MediasoupEIP
+
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID for frontend auth configuration.
+    Value: !Ref CognitoUserPool
+    Export:
+      Name: !Sub NIMBUS-${Environment}-CognitoUserPoolId
+
+  CognitoUserPoolClientId:
+    Description: Cognito User Pool Client ID for frontend auth configuration.
+    Value: !Ref CognitoUserPoolClient
+    Export:
+      Name: !Sub NIMBUS-${Environment}-CognitoClientId

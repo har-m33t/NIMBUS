@@ -1,0 +1,236 @@
+@import "tailwindcss";
+
+/* ─── Nimbus Design Tokens — Light "Above the Clouds" ─── */
+@theme {
+  /* Light palette */
+  --color-nimbus-bg: #F8FAFF;
+  --color-nimbus-elevated: #FFFFFF;
+  --color-nimbus-surface: #EDF2FA;
+  --color-nimbus-text: #1A2035;
+  --color-nimbus-mist: #64748B;
+  --color-nimbus-gold: #E8B931;
+  --color-nimbus-teal: #4ECDC4;
+  --color-nimbus-coral: #EF4444;
+  --color-nimbus-signal-green: #22C55E;
+  --color-nimbus-signal-amber: #F59E0B;
+  --color-nimbus-signal-red: #EF4444;
+  --color-nimbus-signal-gray: #94A3B8;
+
+  /* Cloud layers */
+  --color-cloud-1: #FFFFFF;
+  --color-cloud-2: #E8EDF6;
+  --color-cloud-3: #D4DCF0;
+
+  /* Sky gradient */
+  --color-sky-top: #F8FAFF;
+  --color-sky-mid: #E0EAFC;
+  --color-sky-bottom: #CFDEF3;
+
+  /* Emotion chips */
+  --color-emotion-happy: #FDE68A;
+  --color-emotion-sad: #93C5FD;
+  --color-emotion-angry: #FCA5A5;
+  --color-emotion-calm: #A7F3D0;
+  --color-emotion-surprised: #C4B5FD;
+  --color-emotion-fear: #FCD34D;
+  --color-emotion-disgusted: #BEF264;
+  --color-emotion-confused: #DDD6FE;
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+/* ─── Base ─── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-nimbus-surface) transparent;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: linear-gradient(180deg, var(--color-sky-top) 0%, var(--color-sky-mid) 50%, var(--color-sky-bottom) 100%);
+  background-attachment: fixed;
+  color: var(--color-nimbus-text);
+  min-height: 100vh;
+}
+
+/* ─── Sky Gradient ─── */
+.sky-gradient {
+  background: linear-gradient(180deg, var(--color-sky-top) 0%, var(--color-sky-mid) 50%, var(--color-sky-bottom) 100%);
+}
+
+/* ─── Nimbus Glow Effects (lighter) ─── */
+.nimbus-glow {
+  box-shadow:
+    0 0 20px rgba(232, 185, 49, 0.2),
+    0 0 60px rgba(232, 185, 49, 0.08);
+}
+
+.nimbus-glow-hover:hover {
+  box-shadow:
+    0 0 30px rgba(232, 185, 49, 0.3),
+    0 0 80px rgba(232, 185, 49, 0.12);
+}
+
+.teal-glow {
+  box-shadow:
+    0 0 15px rgba(78, 205, 196, 0.25),
+    0 0 45px rgba(78, 205, 196, 0.08);
+}
+
+/* ─── Frosted Glass (White) ─── */
+.glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.glass-strong {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.06);
+}
+
+/* ─── Aurora Gradient (header accent — lighter) ─── */
+@keyframes aurora-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+.aurora-bar {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(78, 205, 196, 0.12) 25%,
+    rgba(232, 185, 49, 0.10) 50%,
+    rgba(78, 205, 196, 0.12) 75%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: aurora-shift 12s ease-in-out infinite;
+}
+
+/* ─── Cloud Layer Animations ─── */
+@keyframes cloud-drift-left {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-30px); }
+}
+
+@keyframes cloud-drift-right {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(25px); }
+}
+
+@keyframes cloud-drift-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-15px); }
+}
+
+/* ─── Moving Border Animation ─── */
+@keyframes moving-border {
+  0% { --angle: 0deg; }
+  100% { --angle: 360deg; }
+}
+
+@property --angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.moving-border {
+  --angle: 0deg;
+  border: 2px solid transparent;
+  background: linear-gradient(white, white) padding-box,
+    conic-gradient(from var(--angle), #E8B931, #4ECDC4, #E8B931) border-box;
+  animation: moving-border 4s linear infinite;
+}
+
+/* ─── Status Orb ─── */
+@keyframes orb-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 1; }
+}
+
+@keyframes orb-breathe {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 8px rgba(232, 185, 49, 0.3); }
+  50% { transform: scale(1.2); box-shadow: 0 0 20px rgba(232, 185, 49, 0.5); }
+}
+
+@keyframes orb-flicker {
+  0%, 100% { opacity: 1; }
+  25% { opacity: 0.4; }
+  50% { opacity: 0.9; }
+  75% { opacity: 0.3; }
+}
+
+/* ─── Signal Pulse ─── */
+@keyframes signal-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.signal-pulse {
+  animation: signal-pulse 2s ease-in-out infinite;
+}
+
+/* ─── Nimbus Halo (for CTA) ─── */
+@keyframes nimbus-halo {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.05); }
+}
+
+.nimbus-halo {
+  animation: nimbus-halo 3s ease-in-out infinite;
+}
+
+/* ─── Floating Particles ─── */
+@keyframes float-up {
+  0% { transform: translateY(0) translateX(0); opacity: 0; }
+  10% { opacity: 0.6; }
+  90% { opacity: 0.6; }
+  100% { transform: translateY(-100vh) translateX(20px); opacity: 0; }
+}
+
+/* ─── Spotlight Card ─── */
+.spotlight-card {
+  position: relative;
+  overflow: hidden;
+  background: white;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+}
+
+.spotlight-card:hover {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+/* ─── Cloud Shadows ─── */
+.shadow-cloud {
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.05);
+}
+
+.shadow-soft {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+}
+
+/* ─── Focus Rings ─── */
+*:focus-visible {
+  outline: 2px solid var(--color-nimbus-gold);
+  outline-offset: 2px;
+}
+
+/* ─── Reduced Motion ─── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
