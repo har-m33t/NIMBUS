@@ -26,6 +26,8 @@ SORT_KEY = "RATE_LIMIT"
 CAPACITY = 1.0
 REFILL_PER_SEC = 1.0  # < 1 RPS ceiling
 
+_SK = "sk"  # sort-key attribute name, aligned with Sessions table KeySchema
+
 _table = None
 
 
@@ -45,14 +47,14 @@ def try_acquire() -> bool:
     t = _get_table()
     now_ms = _now_ms()
     # Read current state; create on first use.
-    resp = t.get_item(Key={"sessionId": BUCKET_PK, "timestamp": SORT_KEY})
+    resp = t.get_item(Key={"sessionId": BUCKET_PK, _SK: SORT_KEY})
     item = resp.get("Item")
     if item is None:
         try:
             t.put_item(
                 Item={
                     "sessionId": BUCKET_PK,
-                    "timestamp": SORT_KEY,
+                    _SK: SORT_KEY,
                     "tokens": Decimal("0"),  # start empty → forces 1s warmup
                     "lastRefillMs": Decimal(now_ms),
                 },
@@ -70,7 +72,7 @@ def try_acquire() -> bool:
         # Persist partial refill so next caller sees progress.
         try:
             t.update_item(
-                Key={"sessionId": BUCKET_PK, "timestamp": SORT_KEY},
+                Key={"sessionId": BUCKET_PK, _SK: SORT_KEY},
                 UpdateExpression="SET tokens = :t, lastRefillMs = :n",
                 ConditionExpression="lastRefillMs = :prev",
                 ExpressionAttributeValues={

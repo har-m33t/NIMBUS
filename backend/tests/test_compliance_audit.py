@@ -1,4 +1,8 @@
-"""Phase 7.3 compliance tests: C1 (no face crops), C2 (no PII), C4 (S3 security)."""
+"""Phase 7.3 compliance tests: C2 (no PII to Bedrock), C4 (S3 security).
+
+C1 note: face-crop Rekognition is now enabled. Tests updated accordingly.
+Face crop bytes are passed to Rekognition only — never to SageMaker or Bedrock.
+"""
 from __future__ import annotations
 
 import json
@@ -8,57 +12,65 @@ import pytest
 
 
 class TestConstraintC1:
-    """Hackathon C1: no Rekognition, face crops discarded immediately."""
+    """C1 updated: face crops reach Rekognition only, not SageMaker or Bedrock."""
 
-    def test_facecropbase64_not_in_schema(self):
-        """Proof: InferPayload schema never models faceCropBase64."""
+    def test_facecropbase64_in_schema(self):
+        """InferPayload models faceCropBase64 for Rekognition (§3.2)."""
         from common.schemas import InferPayload
-        fields = InferPayload.model_fields.keys()
-        assert "faceCropBase64" not in fields, "faceCropBase64 must not be modeled"
+        assert "faceCropBase64" in InferPayload.model_fields
 
-    def test_facecrop_discarded_audit_metric(self, monkeypatch):
-        """If includeFaceCrop=true, FaceCropsDiscarded metric is incremented."""
+    def test_face_crop_reaches_rekognition_not_sagemaker(self, monkeypatch):
+        """face crop bytes must go to Rekognition; SageMaker must never see them."""
         from handlers import process_frame
-        from services import sagemaker_inference
+        from services import sagemaker_inference, rekognition_emotion
 
-        metrics_logged = []
-        monkeypatch.setattr(process_frame.metrics, "add_metric",
-                           lambda **kw: metrics_logged.append(kw))
+        sm_invocations = []
+        rek_invocations = []
+
+        def capture_sm(kp):
+            sm_invocations.append(kp)
+            return {"tokens": ["X"], "confidence": 0.9}
+
+        def capture_rek(face_bytes):
+            rek_invocations.append(face_bytes)
+            return ("HAPPY", 0.93, {"HAPPY": 0.93})
+
         monkeypatch.setattr(process_frame, "post_to_connection", lambda *a, **kw: True)
+        monkeypatch.setattr(process_frame, "append_gloss", lambda *a, **kw: {"glossBuffer": ["X"]})
         monkeypatch.setattr(sagemaker_inference, "is_in_service", lambda: True)
-        monkeypatch.setattr(sagemaker_inference, "invoke",
-                            lambda kp: {"tokens": ["OK"], "confidence": 0.9})
+        monkeypatch.setattr(sagemaker_inference, "invoke", capture_sm)
+        monkeypatch.setattr(rekognition_emotion, "detect_emotion", capture_rek)
+        monkeypatch.setattr(process_frame, "update_emotion", lambda sid, emo: None)
         process_frame._cold_start_checked.clear()
+        process_frame._session_emotion.clear()
 
         from types import SimpleNamespace
         ctx = SimpleNamespace(function_name="test", function_version="$LATEST",
                              memory_limit_in_mb=1024, invoked_function_arn="arn:test",
                              aws_request_id="req-test")
+        import base64
+        face_b64 = base64.b64encode(b"JPEG" * 500).decode()
         body = {
             "action": "INFER",
-            "sessionId": "sid",
+            "sessionId": "11111111-1111-4111-8111-111111111111",
             "roomId": "r1",
             "timestamp": "2026-04-18T12:00:00Z",
-            "sequenceNumber": 1,
+            "sequenceNumber": 10,
             "payload": {"keypoints": {"leftHand": [], "rightHand": [], "pose": []},
                        "includeFaceCrop": True,
-                       "faceCropBase64": "AAA=" * 10000},
+                       "faceCropBase64": face_b64},
         }
-        event = {"requestContext": {"connectionId": "c1"},
+        event = {"requestContext": {"connectionId": "c1",
+                                   "domainName": "x.execute-api.us-east-1.amazonaws.com",
+                                   "stage": "dev"},
                 "body": json.dumps(body)}
 
-        resp = process_frame.handler(event, ctx)
-        assert resp["statusCode"] == 200
-        # Verify FaceCropsDiscarded metric was logged
-        assert any(m.get("name") == "FaceCropsDiscarded" for m in metrics_logged), \
-            "must log FaceCropsDiscarded metric"
+        process_frame.handler(event, ctx)
 
-    def test_handler_no_rekognition_module(self):
-        """process_frame does not import rekognition_emotion service."""
-        from handlers import process_frame
-        # Check that rekognition_emotion is NOT imported at module level
-        import sys
-        assert "rekognition_emotion" not in sys.modules, "should not import rekognition_emotion"
+        assert sm_invocations, "SageMaker must be called"
+        assert not hasattr(sm_invocations[0], "faceCropBase64"), \
+            "face crop bytes must NOT reach SageMaker"
+        assert rek_invocations, "Rekognition must be called with face bytes"
 
 
 class TestConstraintC2:
@@ -125,23 +137,23 @@ class TestConstraintC4:
 
 
 class TestComplianceProof:
-    """Proof of compliance mechanisms."""
+    """Proof that face crop data stays within Rekognition — never touches SageMaker."""
 
-    def test_face_crop_field_ignored_in_handler(self, monkeypatch):
-        """Handler accepts faceCropBase64 but never uses it."""
+    def test_face_crop_never_reaches_sagemaker(self, monkeypatch):
         from handlers import process_frame
-        from services import sagemaker_inference
+        from services import sagemaker_inference, rekognition_emotion
 
-        # Track what goes to SageMaker
         invoked_with = []
-        def capture_invoke(kp):
-            invoked_with.append(kp)
-            return {"tokens": ["X"], "confidence": 0.9}
-
         monkeypatch.setattr(process_frame, "post_to_connection", lambda *a, **kw: True)
+        monkeypatch.setattr(process_frame, "append_gloss", lambda *a, **kw: {"glossBuffer": ["X"]})
         monkeypatch.setattr(sagemaker_inference, "is_in_service", lambda: True)
-        monkeypatch.setattr(sagemaker_inference, "invoke", capture_invoke)
+        monkeypatch.setattr(sagemaker_inference, "invoke",
+                            lambda kp: invoked_with.append(kp) or {"tokens": ["X"], "confidence": 0.9})
+        monkeypatch.setattr(rekognition_emotion, "detect_emotion",
+                            lambda b: ("CALM", 1.0, {"CALM": 1.0}))
+        monkeypatch.setattr(process_frame, "update_emotion", lambda sid, emo: None)
         process_frame._cold_start_checked.clear()
+        process_frame._session_emotion.clear()
 
         from types import SimpleNamespace
         ctx = SimpleNamespace(function_name="test", function_version="$LATEST",
@@ -149,20 +161,21 @@ class TestComplianceProof:
                              aws_request_id="req-test")
         body = {
             "action": "INFER",
-            "sessionId": "sid",
+            "sessionId": "11111111-1111-4111-8111-111111111111",
             "roomId": "r1",
             "timestamp": "2026-04-18T12:00:00Z",
             "sequenceNumber": 1,
             "payload": {"keypoints": {"leftHand": [], "rightHand": [], "pose": []},
                        "includeFaceCrop": True,
-                       "faceCropBase64": "SENSITIVE_DATA_SHOULD_BE_IGNORED"},
+                       "faceCropBase64": "SENSITIVE_DATA"},
         }
-        event = {"requestContext": {"connectionId": "c1"},
+        event = {"requestContext": {"connectionId": "c1",
+                                   "domainName": "x.execute-api.us-east-1.amazonaws.com",
+                                   "stage": "dev"},
                 "body": json.dumps(body)}
 
         process_frame.handler(event, ctx)
 
-        # Verify no sensitive face data was passed to SageMaker
-        assert invoked_with, "should invoke sagemaker"
-        keypoints = invoked_with[0]
-        assert not hasattr(keypoints, "faceCropBase64"), "face crop must not reach SageMaker"
+        assert invoked_with, "SageMaker must be called"
+        assert not hasattr(invoked_with[0], "faceCropBase64"), \
+            "face crop must not reach SageMaker"
