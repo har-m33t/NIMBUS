@@ -28,7 +28,7 @@ def test_accepts_valid_uuid_and_room_id():
 
     assert resp["statusCode"] == 200
     body = json.loads(resp["body"])
-    assert body == {"sessionId": sid, "connectionId": "conn-1"}
+    assert body == {"sessionId": sid, "connectionId": "conn-1", "userId": "anonymous"}
 
     mock_dyn.put_session_state.assert_called_once_with(sid, "conn-1", "room-42")
     mock_dyn.put_connection_index.assert_called_once_with("conn-1", sid, "room-42")
