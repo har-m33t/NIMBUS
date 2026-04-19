@@ -1,4 +1,4 @@
-https://d3w45x42zio2oi.cloudfront.net/
+https://d1yu3ku5v08i33.cloudfront.net
 
 # ASL Live Video Caption Interpretation (NIMBUS)
 
