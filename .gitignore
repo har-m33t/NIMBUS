@@ -22,3 +22,7 @@ venv/
 
 # Claude Code (per-user local settings; don't check in)
 .claude/settings.local.json
+
+lambda_unzipped/
+*.md
+
