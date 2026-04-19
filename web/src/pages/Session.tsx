@@ -9,6 +9,7 @@ import {
   type PeerInfo,
 } from "../hooks/useSessionSocket.ts";
 import { useWebRTC } from "../hooks/useWebRTC.ts";
+import { useSpeechCaptions } from "../hooks/useSpeechCaptions.ts";
 import VideoFeed from "../components/session/VideoFeed.tsx";
 import RemoteVideo from "../components/session/RemoteVideo.tsx";
 import CaptionBar from "../components/session/CaptionBar.tsx";
@@ -21,11 +22,13 @@ export default function Session() {
   const navigate = useNavigate();
   const [panelOpen, setPanelOpen] = useState(true);
   const [aslEnabled, setAslEnabled] = useState(settings.aslEnabled);
+  const [sttEnabled, setSttEnabled] = useState(false);
 
+  // Live captions shown in the overlay (last few)
+  const [captions, setCaptions] = useState<{ id: string; text: string; source: "ASL" | "STT"; isMine: boolean; isFallback?: boolean; timestamp: string }[]>([]);
   // Transcript accumulates all captions
-  const [transcript, _setTranscript] = useState<{ id: string; text: string; source: "STT" | "ASL"; timestamp: string }[]>([]);
-  // _setTranscript will be used when ProcessFrame pipeline sends real captions
-  const [showTranscript, setShowTranscript] = useState(false);
+  const [transcript, setTranscript] = useState<{ id: string; text: string; source: "STT" | "ASL"; speaker: string; timestamp: string }[]>([]);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Stable session ID for this browser tab
   const sessionId = useMemo(() => crypto.randomUUID(), []);
@@ -70,6 +73,25 @@ export default function Session() {
   // Handle inbound WebSocket messages
   const onMessage = useCallback(
     (msg: InboundSignal) => {
+      if (msg.type === "CAPTION") {
+        const entry = {
+          id: `${msg.sequenceNumber}-${msg.timestamp}`,
+          text: msg.payload.text,
+          source: "ASL" as const,
+          isMine: msg.sessionId === sessionId,
+          isFallback: msg.payload.rawGlossFallback,
+          timestamp: msg.timestamp,
+        };
+        setCaptions((prev) => [...prev.slice(-9), entry]);
+        setTranscript((prev) => [...prev, { id: entry.id, text: entry.text, source: "ASL", speaker: entry.isMine ? (user?.displayName || "You") : "Participant", timestamp: entry.timestamp }]);
+        if (msg.payload.ssmlUrl) {
+          if (ttsAudioRef.current) ttsAudioRef.current.pause();
+          ttsAudioRef.current = new Audio(msg.payload.ssmlUrl);
+          ttsAudioRef.current.play().catch(() => {});
+        }
+        return;
+      }
+
       if (msg.type !== "SIGNAL") return;
 
       switch (msg.event) {
@@ -93,7 +115,7 @@ export default function Session() {
         }
       }
     },
-    [startOffer, removePeer, handleSignal],
+    [sessionId, startOffer, removePeer, handleSignal],
   );
 
   // WebSocket connection
@@ -106,6 +128,16 @@ export default function Session() {
 
   sendSignalRef.current = sendWebRtcSignal;
 
+  // STT captions — fires for each final spoken sentence
+  const { interimText, supported: sttSupported } = useSpeechCaptions({
+    enabled: sttEnabled,
+    onCaption: useCallback((caption) => {
+      const entry = { id: caption.id, text: caption.text, source: "STT" as const, isMine: true, timestamp: caption.timestamp };
+      setCaptions((prev) => [...prev.slice(-9), entry]);
+      setTranscript((prev) => [...prev, { id: caption.id, text: caption.text, source: "STT" as const, speaker: user?.displayName || "You", timestamp: caption.timestamp }]);
+    }, []),
+  });
+
   // Leave room — single handler for both "Leave Room" buttons
   const handleLeaveRoom = useCallback(() => {
     send({ action: "LEAVE_ROOM", sessionId, roomId, payload: {} });
@@ -115,17 +147,6 @@ export default function Session() {
     }
     navigate("/");
   }, [send, sessionId, roomId, cleanupWebRTC, localStream, navigate]);
-
-  // Demo captions (will be driven by ProcessFrame pipeline)
-  const demoCaptions = [
-    {
-      id: "c1",
-      text: "I am going to the store.",
-      source: "ASL" as const,
-      isMine: true,
-      timestamp: new Date().toISOString(),
-    },
-  ];
 
   // Build participants list — show display name, not raw ID
   const participants = [
@@ -153,24 +174,41 @@ export default function Session() {
           )}
         </div>
         <div className="flex items-center gap-3">
-          {/* ASL Translation toggle */}
-          <label className="flex items-center gap-2 text-xs text-nimbus-mist cursor-pointer select-none">
-            ASL
-            <button
-              onClick={() => setAslEnabled(!aslEnabled)}
-              className={`relative w-9 h-5 rounded-full transition-colors ${aslEnabled ? "bg-nimbus-teal" : "bg-nimbus-mist/30"}`}
-            >
-              <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${aslEnabled ? "translate-x-4" : ""}`} />
-            </button>
-          </label>
-
-          {/* Transcript toggle */}
+          {/* ASL toggle */}
           <button
-            onClick={() => setShowTranscript(!showTranscript)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${showTranscript ? "bg-nimbus-gold/20 text-nimbus-gold" : "bg-nimbus-surface text-nimbus-mist hover:text-nimbus-text"}`}
-            title="Toggle transcript"
+            onClick={() => setAslEnabled(!aslEnabled)}
+            title={aslEnabled ? "Stop ASL translation" : "Start ASL translation"}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              aslEnabled
+                ? "bg-nimbus-teal/20 text-nimbus-teal"
+                : "bg-nimbus-surface text-nimbus-mist hover:text-nimbus-text"
+            }`}
           >
-            Transcript
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M7 4v16M7 4l4 4M7 4L3 8M17 4v7M17 11a3 3 0 000 6h1a3 3 0 010 6H14" />
+            </svg>
+            ASL
+            {aslEnabled && <span className="w-1.5 h-1.5 rounded-full bg-nimbus-teal animate-pulse" />}
+          </button>
+
+          {/* STT mic toggle */}
+          <button
+            onClick={() => sttSupported && setSttEnabled(!sttEnabled)}
+            title={sttSupported ? (sttEnabled ? "Stop speech captions" : "Start speech captions") : "Speech recognition not supported in this browser"}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              !sttSupported
+                ? "opacity-40 cursor-not-allowed bg-nimbus-surface text-nimbus-mist"
+                : sttEnabled
+                ? "bg-nimbus-coral/20 text-nimbus-coral"
+                : "bg-nimbus-surface text-nimbus-mist hover:text-nimbus-text"
+            }`}
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 10a7 7 0 0014 0M12 19v3M8 22h8" />
+            </svg>
+            STT
+            {sttEnabled && <span className="w-1.5 h-1.5 rounded-full bg-nimbus-coral animate-pulse" />}
           </button>
 
           {/* Toggle participants */}
@@ -180,9 +218,7 @@ export default function Session() {
             title="Toggle participants"
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v2" />
-              <circle cx="9" cy="7" r="4" />
-              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
+              <path d="M3 12h18M3 6h18M3 18h18" />
             </svg>
           </button>
 
@@ -190,9 +226,9 @@ export default function Session() {
       </div>
 
       {/* Main session layout */}
-      <div className="flex-1 flex gap-4 p-4 overflow-hidden">
-        {/* Left: Video area + Captions overlay */}
-        <div className="flex-1 flex flex-col gap-3 min-w-0">
+      <div className="flex-1 flex flex-col md:flex-row gap-4 p-4 overflow-hidden">
+        {/* Video area — full width on mobile, left column on desktop */}
+        <div className="flex-1 flex flex-col gap-3 min-w-0 min-h-0">
           {/* Video area with caption overlay */}
           <div className="relative flex-1 min-h-0 rounded-2xl overflow-hidden bg-nimbus-elevated border border-nimbus-mist/10">
             {hasRemote ? (
@@ -224,56 +260,27 @@ export default function Session() {
                 settings.captionPos === "top" ? "top-0" : "bottom-0"
               }`}
             >
-              <CaptionBar captions={demoCaptions} fontSize={captionFontSize} overlay />
-            </div>
-          </div>
-
-          {/* Transcript panel (collapsible) */}
-          {showTranscript && (
-            <div className="flex-shrink-0 max-h-48 overflow-y-auto bg-white/80 backdrop-blur-sm rounded-xl border border-nimbus-mist/10 shadow-soft p-4">
-              <h3 className="text-xs font-medium text-nimbus-mist uppercase tracking-wider mb-2">Transcript</h3>
-              {transcript.length === 0 && demoCaptions.length > 0 ? (
-                <div className="space-y-1">
-                  {demoCaptions.map((c) => (
-                    <div key={c.id} className="flex items-start gap-2 text-sm">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${c.source === "ASL" ? "bg-nimbus-teal/20 text-nimbus-teal" : "bg-nimbus-gold/20 text-nimbus-gold"}`}>
-                        {c.source}
-                      </span>
-                      <span className="text-nimbus-text">{c.text}</span>
-                      <span className="text-nimbus-mist text-[10px] ml-auto whitespace-nowrap">
-                        {new Date(c.timestamp).toLocaleTimeString()}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : transcript.length === 0 ? (
-                <p className="text-sm text-nimbus-mist/50 italic">Transcript will appear here...</p>
-              ) : (
-                <div className="space-y-1">
-                  {transcript.map((t) => (
-                    <div key={t.id} className="flex items-start gap-2 text-sm">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${t.source === "ASL" ? "bg-nimbus-teal/20 text-nimbus-teal" : "bg-nimbus-gold/20 text-nimbus-gold"}`}>
-                        {t.source}
-                      </span>
-                      <span className="text-nimbus-text">{t.text}</span>
-                      <span className="text-nimbus-mist text-[10px] ml-auto whitespace-nowrap">
-                        {new Date(t.timestamp).toLocaleTimeString()}
-                      </span>
-                    </div>
-                  ))}
+              <CaptionBar captions={captions} fontSize={captionFontSize} overlay />
+              {interimText && (
+                <div className="mt-1">
+                  <span className={`inline-block px-3 py-1.5 rounded-lg bg-black/40 text-white/70 italic ${captionFontSize} leading-relaxed`}>
+                    {interimText}
+                  </span>
                 </div>
               )}
             </div>
-          )}
+          </div>
+
         </div>
 
-        {/* Right: Participants Panel */}
+        {/* Right: Participants + Transcript Panel */}
         <ParticipantsPanel
           roomId={roomId}
           participants={participants}
           open={panelOpen}
           onToggle={() => setPanelOpen(false)}
           onLeaveRoom={handleLeaveRoom}
+          transcript={transcript}
         />
       </div>
     </div>

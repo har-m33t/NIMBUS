@@ -1,4 +1,5 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../../context/AuthContext.tsx";
 import ConnectionBadge from "../ui/ConnectionBadge.tsx";
 
@@ -6,6 +7,19 @@ export default function AppShell() {
   const { user, signOut } = useAuth();
   const location = useLocation();
   const isSession = location.pathname.startsWith("/session/");
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef<number>(Date.now());
+
+  useEffect(() => {
+    if (!isSession) { setElapsed(0); return; }
+    startRef.current = Date.now();
+    setElapsed(0);
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startRef.current) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [isSession]);
+
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -32,7 +46,7 @@ export default function AppShell() {
 
           {isSession && (
             <span className="text-xs text-nimbus-mist font-mono" id="session-timer">
-              00:00
+              {mm}:{ss}
             </span>
           )}
         </div>
