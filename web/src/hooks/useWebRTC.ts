@@ -28,6 +28,7 @@ const ICE_SERVERS: RTCIceServer[] = [
 
 export interface UseWebRTCArgs {
   localStream: MediaStream | null;
+  ownSessionId: string;
   sendWebRtcSignal: (
     signal: "SDP_OFFER" | "SDP_ANSWER" | "ICE_CANDIDATE",
     target: string,
@@ -35,11 +36,13 @@ export interface UseWebRTCArgs {
   ) => boolean;
 }
 
-export function useWebRTC({ localStream, sendWebRtcSignal }: UseWebRTCArgs) {
+export function useWebRTC({ localStream, ownSessionId, sendWebRtcSignal }: UseWebRTCArgs) {
   const sendRef = useRef(sendWebRtcSignal);
   sendRef.current = sendWebRtcSignal;
   const localStreamRef = useRef(localStream);
   localStreamRef.current = localStream;
+  const ownSessionIdRef = useRef(ownSessionId);
+  ownSessionIdRef.current = ownSessionId;
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const [peers, setPeers] = useState<RemotePeer[]>([]);
 
@@ -47,6 +50,10 @@ export function useWebRTC({ localStream, sendWebRtcSignal }: UseWebRTCArgs) {
   const pendingOpsRef = useRef<Array<() => Promise<void>>>([]);
   // Buffer for ICE candidates that arrive before their PC exists
   const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  // Peers for whom we've sent or queued an outgoing offer
+  const makingOfferRef = useRef<Set<string>>(new Set());
+  // Peers for whom a queued offer should be dropped (we yielded to their offer)
+  const cancelledOffersRef = useRef<Set<string>>(new Set());
 
   // Drain pending operations when localStream becomes available
   useEffect(() => {
@@ -136,22 +143,42 @@ export function useWebRTC({ localStream, sendWebRtcSignal }: UseWebRTCArgs) {
   // Initiate an offer to a remote peer (caller side)
   const startOffer = useCallback(
     async (peer: PeerInfo) => {
+      const existingPc = pcsRef.current.get(peer.connectionId);
+      if (existingPc?.connectionState === "connected") {
+        console.log("[WebRTC] startOffer skipped — already connected to", peer.connectionId);
+        return;
+      }
       if (!localStreamRef.current) {
         console.log("[WebRTC] startOffer queued (waiting for localStream) →", peer.connectionId);
+        makingOfferRef.current.add(peer.connectionId);
         pendingOpsRef.current.push(async () => {
+          if (cancelledOffersRef.current.has(peer.connectionId)) {
+            cancelledOffersRef.current.delete(peer.connectionId);
+            makingOfferRef.current.delete(peer.connectionId);
+            console.log("[WebRTC] startOffer cancelled (yielded) for", peer.connectionId);
+            return;
+          }
+          const currentPc = pcsRef.current.get(peer.connectionId);
+          if (currentPc?.connectionState === "connected") {
+            makingOfferRef.current.delete(peer.connectionId);
+            return;
+          }
           console.log("[WebRTC] startOffer executing (deferred) →", peer.connectionId);
           const pc = createPc(peer.connectionId, peer.sessionId);
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
           sendRef.current("SDP_OFFER", peer.connectionId, { sdp: offer.sdp });
+          makingOfferRef.current.delete(peer.connectionId);
         });
         return;
       }
       console.log("[WebRTC] startOffer →", peer.connectionId);
+      makingOfferRef.current.add(peer.connectionId);
       const pc = createPc(peer.connectionId, peer.sessionId);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       sendRef.current("SDP_OFFER", peer.connectionId, { sdp: offer.sdp });
+      makingOfferRef.current.delete(peer.connectionId);
     },
     [createPc],
   );
@@ -164,11 +191,29 @@ export function useWebRTC({ localStream, sendWebRtcSignal }: UseWebRTCArgs) {
       console.log("[WebRTC] handleSignal", event, "from", remoteConnectionId);
 
       if (event === "SDP_OFFER") {
-        // If already connected, ignore duplicate offers (glare protection)
         const existingPc = pcsRef.current.get(remoteConnectionId);
         if (existingPc?.connectionState === "connected") {
           console.log("[WebRTC] ignoring SDP_OFFER — already connected to", remoteConnectionId);
           return;
+        }
+
+        // Perfect negotiation: detect glare (both sides offered simultaneously)
+        const collision =
+          makingOfferRef.current.has(remoteConnectionId) ||
+          (!!existingPc && existingPc.signalingState !== "stable");
+
+        if (collision) {
+          // Polite peer (larger sessionId) yields to the incoming offer.
+          // Impolite peer (smaller sessionId) ignores the incoming offer and waits for its own answer.
+          const isPolite = ownSessionIdRef.current > remoteSessionId;
+          if (!isPolite) {
+            console.log("[WebRTC] SDP_OFFER collision — impolite, ignoring offer from", remoteConnectionId);
+            return;
+          }
+          console.log("[WebRTC] SDP_OFFER collision — polite, yielding to offer from", remoteConnectionId);
+          cancelledOffersRef.current.add(remoteConnectionId);
+          makingOfferRef.current.delete(remoteConnectionId);
+          // createPc below will close the existing PC
         }
 
         // Need localStream before answering so tracks are present → sendrecv SDP
@@ -254,6 +299,8 @@ export function useWebRTC({ localStream, sendWebRtcSignal }: UseWebRTCArgs) {
     pcsRef.current.clear();
     pendingOpsRef.current = [];
     pendingIceRef.current.clear();
+    makingOfferRef.current.clear();
+    cancelledOffersRef.current.clear();
     setPeers([]);
   }, []);
 

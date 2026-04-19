@@ -98,6 +98,7 @@ export default function Session() {
     cleanup: cleanupWebRTC,
   } = useWebRTC({
     localStream,
+    ownSessionId: sessionId,
     sendWebRtcSignal: useCallback(
       (signal: "SDP_OFFER" | "SDP_ANSWER" | "ICE_CANDIDATE", target: string, payload: Record<string, unknown>) =>
         sendSignalRef.current(signal, target, payload),
@@ -152,9 +153,8 @@ export default function Session() {
           break;
         }
         case "PEER_JOINED": {
-          // The joining peer initiates the offer via their JOIN_ROOM ack.
-          // We wait for their SDP_OFFER — no need to offer from our side.
-          console.log("[Session] PEER_JOINED — waiting for their offer:", msg.payload);
+          console.log("[Session] PEER_JOINED — offering to new peer:", msg.payload);
+          startOffer(msg.payload as PeerInfo);
           break;
         }
         case "PEER_LEFT": {
