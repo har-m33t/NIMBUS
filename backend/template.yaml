@@ -186,9 +186,11 @@ Resources:
         - profile
       AllowedOAuthFlowsUserPoolClient: true
       CallbackURLs:
-        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/oauth/callback", "http://localhost:5173/oauth/callback"]
+        - "http://localhost:5173/oauth/callback"
+        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/oauth/callback", !Ref "AWS::NoValue"]
       LogoutURLs:
-        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/signin", "http://localhost:5173/signin"]
+        - "http://localhost:5173/signin"
+        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/signin", !Ref "AWS::NoValue"]
 
   CognitoUserPoolClientNoGoogle:
     Type: AWS::Cognito::UserPoolClient
@@ -219,9 +221,11 @@ Resources:
         - profile
       AllowedOAuthFlowsUserPoolClient: true
       CallbackURLs:
-        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/oauth/callback", "http://localhost:5173/oauth/callback"]
+        - "http://localhost:5173/oauth/callback"
+        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/oauth/callback", !Ref "AWS::NoValue"]
       LogoutURLs:
-        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/signin", "http://localhost:5173/signin"]
+        - "http://localhost:5173/signin"
+        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/signin", !Ref "AWS::NoValue"]
 
   # ── Cognito Hosted UI Domain ─────────────────────────────────────────────────
 
