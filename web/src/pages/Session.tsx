@@ -157,15 +157,6 @@ export default function Session() {
     }, []),
   });
 
-  // Wraps `send` so every INFER message carries the current targetLanguage + telemetry log.
-  const sendInfer = useCallback(
-    (inferPayload: Record<string, unknown>) => {
-      addLog("WEBSOCKET_TX", "Payload: AWS Bedrock Ingestion");
-      send({ ...inferPayload, targetLanguage });
-    },
-    [send, targetLanguage, addLog],
-  );
-
   // Leave room — single handler for both "Leave Room" buttons
   const handleLeaveRoom = useCallback(() => {
     send({ action: "LEAVE_ROOM", sessionId, roomId, payload: {} });
@@ -179,6 +170,7 @@ export default function Session() {
   // Send edge-inferred gloss token to the backend over WebSocket
   const handleGloss = useCallback((token: string) => {
     seqRef.current += 1;
+    addLog("WEBSOCKET_TX", "Payload: AWS Bedrock Ingestion");
     send({
       action: "INFER",
       sessionId,
@@ -187,7 +179,7 @@ export default function Session() {
       sequenceNumber: seqRef.current,
       payload: { token },
     });
-  }, [send, sessionId, roomId]);
+  }, [send, sessionId, roomId, addLog]);
 
   // Build participants list — show display name, not raw ID
   const participants = [
