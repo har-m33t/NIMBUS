@@ -95,6 +95,9 @@ Conditions:
   HasGoogleOAuth: !And
     - !Not [!Equals [!Ref GoogleClientId, ""]]
     - !Not [!Equals [!Ref GoogleClientSecret, ""]]
+  NoGoogleOAuth: !Or
+    - !Equals [!Ref GoogleClientId, ""]
+    - !Equals [!Ref GoogleClientSecret, ""]
   HasWebAppOrigin: !Not [!Equals [!Ref WebAppOrigin, ""]]
 
 Globals:
@@ -152,8 +155,10 @@ Resources:
       UserPoolAddOns:
         AdvancedSecurityMode: "OFF"
 
-  CognitoUserPoolClient:
+  CognitoUserPoolClientWithGoogle:
     Type: AWS::Cognito::UserPoolClient
+    Condition: HasGoogleOAuth
+    DependsOn: CognitoGoogleIdP
     Properties:
       ClientName: !Sub NIMBUS_${Environment}_WebClient
       UserPoolId: !Ref CognitoUserPool
@@ -172,7 +177,40 @@ Resources:
         RefreshToken: days
       SupportedIdentityProviders:
         - COGNITO
-        - !If [HasGoogleOAuth, Google, !Ref "AWS::NoValue"]
+        - Google
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/oauth/callback", "http://localhost:5173/oauth/callback"]
+      LogoutURLs:
+        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/signin", "http://localhost:5173/signin"]
+
+  CognitoUserPoolClientNoGoogle:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: NoGoogleOAuth
+    Properties:
+      ClientName: !Sub NIMBUS_${Environment}_WebClient
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      SupportedIdentityProviders:
+        - COGNITO
       AllowedOAuthFlows:
         - code
       AllowedOAuthScopes:
@@ -1199,7 +1237,7 @@ Outputs:
 
   CognitoUserPoolClientId:
     Description: Cognito User Pool Client ID for frontend auth configuration.
-    Value: !Ref CognitoUserPoolClient
+    Value: !If [HasGoogleOAuth, !Ref CognitoUserPoolClientWithGoogle, !Ref CognitoUserPoolClientNoGoogle]
     Export:
       Name: !Sub NIMBUS-${Environment}-CognitoClientId
 
