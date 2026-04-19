@@ -19,7 +19,7 @@ import re
 
 from services import dynamo
 from services.response import bad_request, ok, server_error
-from services.websocket import post_to_connection
+from services.websocket import broadcast, post_to_connection
 
 _log = logging.getLogger()
 _log.setLevel(logging.INFO)
@@ -51,6 +51,10 @@ def handler(event, _context):
         dynamo.join_room(room_id, connection_id, session_id)
         dynamo.update_session_room(session_id, room_id)
         dynamo.put_connection_index(connection_id, session_id, room_id)
+        existing = [
+            p for p in dynamo.list_room_peers(room_id)
+            if p["connectionId"] != connection_id
+        ]
     except Exception:  # noqa: BLE001
         _log.exception("JOIN_ROOM failed for %s / %s", session_id, room_id)
         return server_error("Failed to join room")
@@ -60,8 +64,25 @@ def handler(event, _context):
         "event": "JOIN_ROOM",
         "sessionId": session_id,
         "roomId": room_id,
-        "payload": {"status": "joined"},
+        "payload": {"status": "joined", "peers": existing},
     }
     post_to_connection(connection_id, ack)
-    _log.info("JOIN_ROOM sessionId=%s roomId=%s", session_id, room_id)
+
+    if existing:
+        broadcast(
+            [p["connectionId"] for p in existing],
+            {
+                "type": "SIGNAL",
+                "event": "PEER_JOINED",
+                "sessionId": session_id,
+                "roomId": room_id,
+                "payload": {
+                    "connectionId": connection_id,
+                    "sessionId": session_id,
+                },
+            },
+        )
+
+    _log.info("JOIN_ROOM sessionId=%s roomId=%s peers=%d",
+              session_id, room_id, len(existing))
     return ok()

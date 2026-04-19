@@ -13,6 +13,7 @@ EmotionLabel = Literal[
 SignalEvent = Literal[
     "JOIN_ROOM", "LEAVE_ROOM", "ICE_CANDIDATE",
     "SDP_OFFER", "SDP_ANSWER", "NEW_CAPTION", "ENDPOINT_WARMING",
+    "PEER_JOINED", "PEER_LEFT",
 ]
 
 

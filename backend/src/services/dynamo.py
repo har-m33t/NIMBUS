@@ -134,3 +134,29 @@ def list_room_connections(room_id: str) -> Iterable[str]:
         last_key = resp.get("LastEvaluatedKey")
         if not last_key:
             return
+
+
+def list_room_peers(room_id: str) -> Iterable[dict]:
+    """Yield every peer currently in a room, each as {connectionId, sessionId}.
+
+    Like list_room_connections but also exposes sessionId so the web client
+    can render stable peer identifiers across reconnects.
+    """
+    last_key = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": "roomId = :r",
+            "ExpressionAttributeValues": {":r": room_id},
+            "ProjectionExpression": "connectionId, sessionId",
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        resp = _rooms.query(**kwargs)
+        for item in resp.get("Items", []):
+            yield {
+                "connectionId": item["connectionId"],
+                "sessionId": item.get("sessionId", ""),
+            }
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            return

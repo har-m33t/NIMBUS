@@ -53,6 +53,24 @@ Parameters:
     Type: String
     Default: 0.0.0.0/32
     Description: CIDR allowed to SSH to the SFU (tighten before production).
+
+  GoogleClientId:
+    Type: String
+    Default: ""
+    Description: Google OAuth 2.0 client ID for federated sign-in. Leave blank to skip Google IdP.
+  GoogleClientSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Google OAuth 2.0 client secret.
+  CognitoDomainPrefix:
+    Type: String
+    Default: nimbus-prod
+    Description: Prefix for the Cognito Hosted UI domain (must be globally unique).
+  WebAppOrigin:
+    Type: String
+    Default: ""
+    Description: Frontend origin URL (e.g. https://d1234.cloudfront.net) for OAuth callback.
   MediasoupAmiSsmParameter:
     Type: String
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -74,11 +92,15 @@ Conditions:
     - !Condition HasMediasoupVpcId
     - !Condition HasMediasoupSubnetId
     - !Condition HasMediasoupKeyPairName
+  HasGoogleOAuth: !And
+    - !Not [!Equals [!Ref GoogleClientId, ""]]
+    - !Not [!Equals [!Ref GoogleClientSecret, ""]]
+  HasWebAppOrigin: !Not [!Equals [!Ref WebAppOrigin, ""]]
 
 Globals:
   Function:
     Runtime: python3.13
-    Architectures: [arm64]
+    Architectures: [x86_64]
     CodeUri: src/
     Timeout: 29
     MemorySize: 512
@@ -150,6 +172,44 @@ Resources:
         RefreshToken: days
       SupportedIdentityProviders:
         - COGNITO
+        - !If [HasGoogleOAuth, Google, !Ref "AWS::NoValue"]
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/oauth/callback", "http://localhost:5173/oauth/callback"]
+      LogoutURLs:
+        - !If [HasWebAppOrigin, !Sub "${WebAppOrigin}/signin", "http://localhost:5173/signin"]
+
+  # ── Cognito Hosted UI Domain ─────────────────────────────────────────────────
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref CognitoUserPool
+
+  # ── Google Identity Provider (conditional) ───────────────────────────────────
+
+  CognitoGoogleIdP:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: HasGoogleOAuth
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        client_id: !Ref GoogleClientId
+        client_secret: !Ref GoogleClientSecret
+        authorize_scopes: "email openid profile"
+      AttributeMapping:
+        email: email
+        name: name
+        username: sub
 
   # ── WebSocket Lambda Authorizer ──────────────────────────────────────────────
 
@@ -237,6 +297,14 @@ Resources:
       AuthorizationType: NONE
       Target: !Sub integrations/${LeaveRoomIntegration}
 
+  WebRtcSignalRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: WEBRTC_SIGNAL
+      AuthorizationType: NONE
+      Target: !Sub integrations/${WebRtcSignalIntegration}
+
   ConnectIntegration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:
@@ -272,6 +340,13 @@ Resources:
       IntegrationType: AWS_PROXY
       IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LeaveRoomFunction.Arn}/invocations
 
+  WebRtcSignalIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebRtcSignalFunction.Arn}/invocations
+
   ApiDeployment:
     Type: AWS::ApiGatewayV2::Deployment
     DependsOn:
@@ -280,6 +355,7 @@ Resources:
       - InferRoute
       - JoinRoomRoute
       - LeaveRoomRoute
+      - WebRtcSignalRoute
     Properties:
       ApiId: !Ref WebSocketApi
 
@@ -412,7 +488,10 @@ Resources:
       Handler: handlers.ws_disconnect.handler
       Role: !GetAtt LambdaExecutionRole.Arn
       MemorySize: 128
-      Description: WebSocket $disconnect — clears sk=STATE + CONN# index.
+      Description: WebSocket $disconnect — clears sk=STATE + CONN# index, broadcasts PEER_LEFT.
+      Environment:
+        Variables:
+          WEBSOCKET_ENDPOINT: !Sub https://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
 
   WSDisconnectPermission:
     Type: AWS::Lambda::Permission
@@ -454,6 +533,24 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Ref LeaveRoomFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*
+
+  WebRtcSignalFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: NIMBUS_PROD_WebRtcSignal
+      Handler: handlers.webrtc_signal.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          WEBSOCKET_ENDPOINT: !Sub https://${WebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+
+  WebRtcSignalPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WebRtcSignalFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*
@@ -594,6 +691,11 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /aws/lambda/NIMBUS_PROD_BroadcastCaption
+      RetentionInDays: 14
+  WebRtcSignalLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/NIMBUS_PROD_WebRtcSignal
       RetentionInDays: 14
 
   # ── DynamoDB (PROTOCOLS.md §2, §5.3) ────────────────────────────────────────
@@ -905,6 +1007,74 @@ Resources:
       Description: JSON-encoded TURN server config read by the mediasoup SFU on startup.
       Value: '{"iceServers":[]}'
 
+  # ── Static Web Hosting (S3 + CloudFront) ───────────────────────────────────
+
+  WebHostingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "nimbus-${Environment}-web-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  WebOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "nimbus-${Environment}-web-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt WebHostingBucket.RegionalDomainName
+            OriginAccessControlId: !Ref WebOriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  WebHostingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebHostingBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${WebHostingBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}"
+
 # ── Outputs ────────────────────────────────────────────────────────────────────
 # Handoff values your teammates need after `sam deploy`.
 
@@ -982,3 +1152,19 @@ Outputs:
     Value: !Ref CognitoUserPoolClient
     Export:
       Name: !Sub NIMBUS-${Environment}-CognitoClientId
+
+  CognitoDomain:
+    Description: Cognito Hosted UI domain for OAuth (Google sign-in).
+    Value: !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+
+  WebHostingBucketName:
+    Description: S3 bucket for the React frontend build output.
+    Value: !Ref WebHostingBucket
+
+  CloudFrontDomainName:
+    Description: CloudFront distribution domain for the web app (https://<domain>).
+    Value: !GetAtt WebDistribution.DomainName
+
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID (for cache invalidation).
+    Value: !Ref WebDistribution

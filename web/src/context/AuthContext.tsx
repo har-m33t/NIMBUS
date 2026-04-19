@@ -36,6 +36,10 @@ interface AuthState {
   resetPassword: (email: string) => Promise<void>;
   /** Confirmation step after sign-up (Cognito sends a verification code) */
   confirmSignUp: (email: string, code: string) => Promise<void>;
+  /** Redirect to Cognito Hosted UI for Google sign-in */
+  signInWithGoogle: () => void;
+  /** Exchange OAuth authorization code for tokens (called from callback route) */
+  handleOAuthCallback: (code: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -97,7 +101,21 @@ function useMockAuth(): AuthState {
 
   const confirmSignUp = useCallback(async (_email: string, _code: string) => {}, []);
 
-  return { user, loading, idToken: null, signIn, signUp, signOut, resetPassword, confirmSignUp };
+  const signInWithGoogle = useCallback(() => {
+    // Mock: simulate Google sign-in
+    const u: User = { id: crypto.randomUUID(), email: "user@gmail.com", displayName: "Google User" };
+    localStorage.setItem("nimbus_user", JSON.stringify(u));
+    setUser(u);
+  }, []);
+
+  const handleOAuthCallback = useCallback(async (_code: string) => {
+    // Mock: same as above
+    const u: User = { id: crypto.randomUUID(), email: "user@gmail.com", displayName: "Google User" };
+    localStorage.setItem("nimbus_user", JSON.stringify(u));
+    setUser(u);
+  }, []);
+
+  return { user, loading, idToken: null, signIn, signUp, signOut, resetPassword, confirmSignUp, signInWithGoogle, handleOAuthCallback };
 }
 
 // ── Real Cognito auth ────────────────────────────────────────────────────────
@@ -205,7 +223,63 @@ function useCognitoAuth(): AuthState {
     });
   }, []);
 
-  return { user, loading, idToken, signIn, signUp, signOut, resetPassword, confirmSignUp };
+  // Google sign-in via Cognito Hosted UI
+  const signInWithGoogle = useCallback(() => {
+    const { domain, region, clientId, redirectUri } = COGNITO_CONFIG;
+    if (!domain) {
+      alert("Google sign-in is not configured yet. Please use email/password to sign in.");
+      return;
+    }
+    const hostedUiBase = `https://${domain}.auth.${region}.amazoncognito.com`;
+    const params = new URLSearchParams({
+      identity_provider: "Google",
+      redirect_uri: redirectUri,
+      response_type: "code",
+      client_id: clientId,
+      scope: "email openid profile",
+    });
+    window.location.href = `${hostedUiBase}/oauth2/authorize?${params.toString()}`;
+  }, []);
+
+  // Exchange OAuth authorization code for tokens
+  const handleOAuthCallback = useCallback(async (code: string) => {
+    const { domain, region, clientId, redirectUri } = COGNITO_CONFIG;
+    const hostedUiBase = `https://${domain}.auth.${region}.amazoncognito.com`;
+
+    setLoading(true);
+    try {
+      const resp = await fetch(`${hostedUiBase}/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: clientId,
+          redirect_uri: redirectUri,
+          code,
+        }),
+      });
+
+      if (!resp.ok) {
+        throw new Error(`Token exchange failed: ${resp.status}`);
+      }
+
+      const data = await resp.json();
+      const idTokenJwt = data.id_token as string;
+
+      // Decode the ID token payload to extract user info
+      const payload = JSON.parse(atob(idTokenJwt.split(".")[1]));
+      setUser({
+        id: payload.sub,
+        email: payload.email || "",
+        displayName: payload.name || payload.email?.split("@")[0] || "User",
+      });
+      setIdToken(idTokenJwt);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { user, loading, idToken, signIn, signUp, signOut, resetPassword, confirmSignUp, signInWithGoogle, handleOAuthCallback };
 }
 
 // ── Provider ─────────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext.tsx";
 import { CloudTransitionProvider, useCloudTransition } from "./context/CloudTransitionContext.tsx";
+import { SettingsProvider } from "./context/SettingsContext.tsx";
 import CloudLayers from "./components/effects/CloudBackground.tsx";
 import AppShell from "./components/layout/AppShell.tsx";
 import SignIn from "./pages/SignIn.tsx";
@@ -9,6 +10,7 @@ import ForgotPassword from "./pages/ForgotPassword.tsx";
 import Dashboard from "./pages/Dashboard.tsx";
 import Session from "./pages/Session.tsx";
 import Settings from "./pages/Settings.tsx";
+import OAuthCallback from "./pages/OAuthCallback.tsx";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
@@ -31,6 +33,7 @@ function PersistentClouds() {
 export default function App() {
   return (
     <AuthProvider>
+      <SettingsProvider>
       <CloudTransitionProvider>
         <PersistentClouds />
         <Routes>
@@ -38,6 +41,7 @@ export default function App() {
           <Route path="/signin" element={<PublicRoute><SignIn /></PublicRoute>} />
           <Route path="/signup" element={<PublicRoute><SignUp /></PublicRoute>} />
           <Route path="/forgot-password" element={<PublicRoute><ForgotPassword /></PublicRoute>} />
+          <Route path="/oauth/callback" element={<OAuthCallback />} />
 
           {/* Protected app routes */}
           <Route path="/" element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
@@ -47,6 +51,7 @@ export default function App() {
           </Route>
         </Routes>
       </CloudTransitionProvider>
+      </SettingsProvider>
     </AuthProvider>
   );
 }

@@ -2,13 +2,18 @@ import { useState } from "react";
 import SpotlightCard from "../components/ui/SpotlightCard.tsx";
 import NimbusButton from "../components/ui/NimbusButton.tsx";
 import NimbusInput from "../components/ui/NimbusInput.tsx";
+import { useSettings } from "../context/SettingsContext.tsx";
 
 export default function Settings() {
-  const [voice, setVoice] = useState("Matthew");
-  const [fontSize, setFontSize] = useState<"small" | "medium" | "large">("medium");
-  const [captionPos, setCaptionPos] = useState<"bottom" | "top">("bottom");
-  const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [zoomUrl, setZoomUrl] = useState("");
+  const { settings, update } = useSettings();
+  const [saved, setSaved] = useState(false);
+
+  function handleSave() {
+    // Settings are already persisted via context on every change,
+    // but this gives user feedback
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
@@ -17,24 +22,41 @@ export default function Settings() {
       <div className="space-y-6">
         {/* Voice Selection */}
         <SpotlightCard className="rounded-2xl p-6">
-          <h2 className="text-sm font-medium text-nimbus-mist uppercase tracking-wider mb-4">Voice</h2>
+          <h2 className="text-sm font-medium text-nimbus-mist uppercase tracking-wider mb-4">TTS Voice &amp; Accent</h2>
           <div className="flex items-center gap-4">
             <select
-              value={voice}
-              onChange={(e) => setVoice(e.target.value)}
+              value={settings.voice}
+              onChange={(e) => update({ voice: e.target.value })}
               className="flex-1 px-4 py-3 rounded-xl bg-white border border-nimbus-mist/20 text-nimbus-text focus:outline-none focus:ring-2 focus:ring-nimbus-gold/50 shadow-soft"
             >
-              <option value="Matthew">Matthew (Male, US)</option>
-              <option value="Joanna">Joanna (Female, US)</option>
-              <option value="Amy">Amy (Female, UK)</option>
-              <option value="Brian">Brian (Male, UK)</option>
+              <optgroup label="US English">
+                <option value="Matthew">Matthew (Male, US)</option>
+                <option value="Joanna">Joanna (Female, US)</option>
+                <option value="Kendra">Kendra (Female, US)</option>
+                <option value="Joey">Joey (Male, US)</option>
+                <option value="Ivy">Ivy (Female, US — Child)</option>
+              </optgroup>
+              <optgroup label="British English">
+                <option value="Amy">Amy (Female, UK)</option>
+                <option value="Brian">Brian (Male, UK)</option>
+                <option value="Emma">Emma (Female, UK)</option>
+              </optgroup>
+              <optgroup label="Australian English">
+                <option value="Olivia">Olivia (Female, AU)</option>
+                <option value="Russell">Russell (Male, AU)</option>
+              </optgroup>
+              <optgroup label="Indian English">
+                <option value="Aditi">Aditi (Female, IN)</option>
+                <option value="Raveena">Raveena (Female, IN)</option>
+              </optgroup>
+              <optgroup label="Other">
+                <option value="Salli">Salli (Female, US)</option>
+                <option value="Kimberly">Kimberly (Female, US)</option>
+              </optgroup>
             </select>
-            <NimbusButton variant="secondary" size="sm">
-              Preview
-            </NimbusButton>
           </div>
           <p className="text-xs text-nimbus-mist mt-2">
-            TTS voice adjusts pitch, rate, and volume based on detected emotion.
+            TTS voice used for reading captions aloud. Pitch, rate, and volume adapt to detected emotion.
           </p>
         </SpotlightCard>
 
@@ -47,9 +69,9 @@ export default function Settings() {
               return (
                 <button
                   key={size}
-                  onClick={() => setFontSize(size)}
+                  onClick={() => update({ fontSize: size })}
                   className={`flex-1 px-4 py-4 rounded-xl border transition-all ${
-                    fontSize === size
+                    settings.fontSize === size
                       ? "border-nimbus-gold/50 bg-nimbus-gold/5 text-nimbus-text"
                       : "border-nimbus-mist/15 text-nimbus-mist hover:border-nimbus-mist/30"
                   }`}
@@ -69,9 +91,9 @@ export default function Settings() {
             {(["top", "bottom"] as const).map((pos) => (
               <button
                 key={pos}
-                onClick={() => setCaptionPos(pos)}
+                onClick={() => update({ captionPos: pos })}
                 className={`flex-1 px-4 py-4 rounded-xl border transition-all ${
-                  captionPos === pos
+                  settings.captionPos === pos
                     ? "border-nimbus-gold/50 bg-nimbus-gold/5"
                     : "border-nimbus-mist/15 hover:border-nimbus-mist/30"
                 }`}
@@ -85,6 +107,20 @@ export default function Settings() {
           </div>
         </SpotlightCard>
 
+        {/* ASL Translation */}
+        <SpotlightCard className="rounded-2xl p-6">
+          <h2 className="text-sm font-medium text-nimbus-mist uppercase tracking-wider mb-4">ASL Translation</h2>
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-nimbus-text">Enable real-time ASL to English translation</p>
+            <button
+              onClick={() => update({ aslEnabled: !settings.aslEnabled })}
+              className={`relative w-12 h-7 rounded-full transition-colors ${settings.aslEnabled ? "bg-nimbus-teal" : "bg-nimbus-mist/30"}`}
+            >
+              <span className={`absolute top-1 left-1 w-5 h-5 rounded-full bg-white shadow transition-transform ${settings.aslEnabled ? "translate-x-5" : ""}`} />
+            </button>
+          </div>
+        </SpotlightCard>
+
         {/* Theme */}
         <SpotlightCard className="rounded-2xl p-6">
           <h2 className="text-sm font-medium text-nimbus-mist uppercase tracking-wider mb-4">Theme</h2>
@@ -92,9 +128,9 @@ export default function Settings() {
             {(["light", "dark"] as const).map((t) => (
               <button
                 key={t}
-                onClick={() => setTheme(t)}
+                onClick={() => update({ theme: t })}
                 className={`flex-1 px-4 py-4 rounded-xl border transition-all flex items-center justify-center gap-2 ${
-                  theme === t
+                  settings.theme === t
                     ? "border-nimbus-gold/50 bg-nimbus-gold/5 text-nimbus-text"
                     : "border-nimbus-mist/15 text-nimbus-mist hover:border-nimbus-mist/30"
                 }`}
@@ -128,19 +164,19 @@ export default function Settings() {
           <div className="flex items-center gap-3">
             <NimbusInput
               placeholder="Zoom Caption API URL"
-              value={zoomUrl}
-              onChange={(e) => setZoomUrl(e.target.value)}
+              value={settings.zoomUrl}
+              onChange={(e) => update({ zoomUrl: e.target.value })}
               className="flex-1"
             />
-            <NimbusButton variant="secondary" size="sm" disabled={!zoomUrl}>
+            <NimbusButton variant="secondary" size="sm" disabled={!settings.zoomUrl}>
               Test
             </NimbusButton>
           </div>
         </SpotlightCard>
 
         {/* Save */}
-        <NimbusButton glow className="w-full">
-          Save Preferences
+        <NimbusButton glow className="w-full" onClick={handleSave}>
+          {saved ? "✓ Saved!" : "Save Preferences"}
         </NimbusButton>
       </div>
     </div>

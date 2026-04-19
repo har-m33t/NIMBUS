@@ -1,5 +1,3 @@
-import EmotionChip from "../ui/EmotionChip.tsx";
-
 interface Participant {
   id: string;
   displayName: string;
@@ -9,17 +7,15 @@ interface Participant {
 export default function ParticipantsPanel({
   roomId,
   participants,
-  emotion,
-  emotionConfidence,
   open,
   onToggle,
+  onLeaveRoom,
 }: {
   roomId: string;
   participants: Participant[];
-  emotion: string;
-  emotionConfidence: number;
   open: boolean;
   onToggle: () => void;
+  onLeaveRoom: () => void;
 }) {
   return (
     <div
@@ -50,15 +46,6 @@ export default function ParticipantsPanel({
             {roomId}
           </button>
 
-          {/* Emotion Display */}
-          <div>
-            <h3 className="text-xs font-medium text-nimbus-mist uppercase tracking-wider mb-2">Emotion</h3>
-            <EmotionChip emotion={emotion} confidence={emotionConfidence} size="lg" />
-            <p className="text-xs text-nimbus-mist mt-2">
-              🎙 Expressive voice: <span className="text-nimbus-teal">ON</span>
-            </p>
-          </div>
-
           {/* Participants */}
           <div className="flex-1">
             <h3 className="text-xs font-medium text-nimbus-mist uppercase tracking-wider mb-2">
@@ -80,7 +67,10 @@ export default function ParticipantsPanel({
           </div>
 
           {/* Leave Room */}
-          <button className="mt-auto px-4 py-2 rounded-xl border border-nimbus-coral/30 text-nimbus-coral text-sm font-medium hover:bg-nimbus-coral/10 transition-colors">
+          <button
+            onClick={onLeaveRoom}
+            className="mt-auto px-4 py-2 rounded-xl border border-nimbus-coral/30 text-nimbus-coral text-sm font-medium hover:bg-nimbus-coral/10 transition-colors"
+          >
             Leave Room
           </button>
         </div>

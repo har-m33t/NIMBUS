@@ -1,36 +1,21 @@
 import { useRef, useEffect } from "react";
 
 export default function VideoFeed({
+  stream = null,
   showOverlay = true,
   isTracking = false,
 }: {
+  stream?: MediaStream | null;
   showOverlay?: boolean;
   isTracking?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
-    let stream: MediaStream | null = null;
-
-    async function start() {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720, facingMode: "user" },
-          audio: false,
-        });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      } catch {
-        // Camera not available — will show placeholder
-      }
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
     }
-
-    start();
-    return () => {
-      stream?.getTracks().forEach((t) => t.stop());
-    };
-  }, []);
+  }, [stream]);
 
   return (
     <div className="relative w-full rounded-2xl overflow-hidden border border-nimbus-mist/10 bg-nimbus-elevated">
