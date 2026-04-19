@@ -2,7 +2,9 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext.tsx";
 import { CloudTransitionProvider, useCloudTransition } from "./context/CloudTransitionContext.tsx";
 import { SettingsProvider } from "./context/SettingsContext.tsx";
+import { TelemetryProvider } from "./context/TelemetryContext.tsx";
 import CloudLayers from "./components/effects/CloudBackground.tsx";
+import GlassBox from "./components/GlassBox.tsx";
 import AppShell from "./components/layout/AppShell.tsx";
 import SignIn from "./pages/SignIn.tsx";
 import SignUp from "./pages/SignUp.tsx";
@@ -32,10 +34,12 @@ function PersistentClouds() {
 
 export default function App() {
   return (
+    <TelemetryProvider>
     <AuthProvider>
       <SettingsProvider>
       <CloudTransitionProvider>
         <PersistentClouds />
+        <GlassBox />
         <Routes>
           {/* Public auth routes */}
           <Route path="/signin" element={<PublicRoute><SignIn /></PublicRoute>} />
@@ -53,5 +57,6 @@ export default function App() {
       </CloudTransitionProvider>
       </SettingsProvider>
     </AuthProvider>
+    </TelemetryProvider>
   );
 }

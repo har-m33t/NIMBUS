@@ -1,16 +1,32 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import SpotlightCard from "../components/ui/SpotlightCard.tsx";
 import NimbusButton from "../components/ui/NimbusButton.tsx";
 import NimbusInput from "../components/ui/NimbusInput.tsx";
 import { useSettings } from "../context/SettingsContext.tsx";
+import { useAuth } from "../context/AuthContext.tsx";
+import { saveVoicePreference } from "../config/preferences.ts";
 
 export default function Settings() {
   const { settings, update } = useSettings();
+  const { user } = useAuth();
   const [saved, setSaved] = useState(false);
+  const [voiceSaveStatus, setVoiceSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  const handleVoiceChange = useCallback(async (voiceId: string) => {
+    update({ voice: voiceId });
+    if (!user) return;
+    setVoiceSaveStatus("saving");
+    try {
+      await saveVoicePreference(user.id, voiceId);
+      setVoiceSaveStatus("saved");
+      setTimeout(() => setVoiceSaveStatus("idle"), 2000);
+    } catch {
+      setVoiceSaveStatus("error");
+      setTimeout(() => setVoiceSaveStatus("idle"), 3000);
+    }
+  }, [update, user]);
 
   function handleSave() {
-    // Settings are already persisted via context on every change,
-    // but this gives user feedback
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
@@ -26,8 +42,9 @@ export default function Settings() {
           <div className="flex items-center gap-4">
             <select
               value={settings.voice}
-              onChange={(e) => update({ voice: e.target.value })}
-              className="flex-1 px-4 py-3 rounded-xl bg-white border border-nimbus-mist/20 text-nimbus-text focus:outline-none focus:ring-2 focus:ring-nimbus-gold/50 shadow-soft"
+              onChange={(e) => handleVoiceChange(e.target.value)}
+              disabled={voiceSaveStatus === "saving"}
+              className="flex-1 px-4 py-3 rounded-xl bg-white border border-nimbus-mist/20 text-nimbus-text focus:outline-none focus:ring-2 focus:ring-nimbus-gold/50 shadow-soft disabled:opacity-60"
             >
               <optgroup label="US English">
                 <option value="Matthew">Matthew (Male, US)</option>
@@ -55,9 +72,14 @@ export default function Settings() {
               </optgroup>
             </select>
           </div>
-          <p className="text-xs text-nimbus-mist mt-2">
-            TTS voice used for reading captions aloud. Pitch, rate, and volume adapt to detected emotion.
-          </p>
+          <div className="flex items-center justify-between mt-2">
+            <p className="text-xs text-nimbus-mist">
+              TTS voice used for reading captions aloud. Pitch, rate, and volume adapt to detected emotion.
+            </p>
+            {voiceSaveStatus === "saving" && <span className="text-xs text-nimbus-mist">Saving…</span>}
+            {voiceSaveStatus === "saved" && <span className="text-xs text-nimbus-teal">Saved to profile</span>}
+            {voiceSaveStatus === "error" && <span className="text-xs text-nimbus-coral">Save failed</span>}
+          </div>
         </SpotlightCard>
 
         {/* Caption Font Size */}

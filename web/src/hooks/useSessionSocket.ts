@@ -33,12 +33,13 @@ export interface UseSessionSocketOptions {
   token: string | null;
   sessionId: string;
   roomId: string;
+  userId?: string | null;
   onMessage: (msg: InboundSignal) => void;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
-export function useSessionSocket({ token, sessionId, roomId, onMessage }: UseSessionSocketOptions) {
+export function useSessionSocket({ token, sessionId, roomId, userId, onMessage }: UseSessionSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const [status, setStatus] = useState<SocketStatus>("idle");
   const onMessageRef = useRef(onMessage);
@@ -126,9 +127,12 @@ export function useSessionSocket({ token, sessionId, roomId, onMessage }: UseSes
 
   const send = useCallback((data: Record<string, unknown>) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(data));
+      const payload = data.action === "INFER" && userId
+        ? { ...data, userId }
+        : data;
+      wsRef.current.send(JSON.stringify(payload));
     }
-  }, []);
+  }, [userId]);
 
   const sendWebRtcSignal = useCallback(
     (signal: "SDP_OFFER" | "SDP_ANSWER" | "ICE_CANDIDATE", target: string, payload: Record<string, unknown>) => {

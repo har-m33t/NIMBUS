@@ -50,6 +50,11 @@ class InferMessage(BaseModel):
     timestamp: str
     sequenceNumber: int
     payload: InferPayload
+    # BCP-47 language code for Translate + Polly voice selection.
+    # Absent or "en" → English (no Translate call, Matthew voice).
+    targetLanguage: str | None = None
+    # Cognito sub (userId) — used to look up per-user Polly voice preference.
+    userId: str | None = None
 
 
 class GlossEvent(BaseModel):
