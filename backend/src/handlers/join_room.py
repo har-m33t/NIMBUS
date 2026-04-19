@@ -48,12 +48,25 @@ def handler(event, _context):
         return bad_request("roomId is required and must match [a-zA-Z0-9_-]{1,64}")
 
     try:
+        # Remove any stale connectionIds for this session before writing the new one.
+        # This handles React StrictMode double-mounts and reconnections where the old
+        # WebSocket hasn't sent $disconnect yet but a new connection is already joining.
+        all_peers = list(dynamo.list_room_peers(room_id))
+        stale = [
+            p for p in all_peers
+            if p.get("sessionId") == session_id and p["connectionId"] != connection_id
+        ]
+        for p in stale:
+            dynamo.leave_room(room_id, p["connectionId"])
+            _log.info("JOIN_ROOM cleaned stale conn=%s for session=%s", p["connectionId"], session_id)
+
         dynamo.join_room(room_id, connection_id, session_id)
         dynamo.update_session_room(session_id, room_id)
         dynamo.put_connection_index(connection_id, session_id, room_id)
         existing = [
-            p for p in dynamo.list_room_peers(room_id)
+            p for p in all_peers
             if p["connectionId"] != connection_id
+            and p.get("sessionId") != session_id  # exclude stale same-session entries
         ]
     except Exception:  # noqa: BLE001
         _log.exception("JOIN_ROOM failed for %s / %s", session_id, room_id)

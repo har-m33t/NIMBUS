@@ -143,7 +143,7 @@ export default function Session() {
   );
 
   // WebSocket connection
-  const { status: _wsStatus, send, sendWebRtcSignal } = useSessionSocket({
+  const { status: wsStatus, send, sendWebRtcSignal } = useSessionSocket({
     token: idToken,
     sessionId,
     roomId,
@@ -224,6 +224,13 @@ export default function Session() {
         <div className="flex items-center gap-4">
           <span className="text-xs font-mono text-nimbus-mist">
             Room: <span className="text-nimbus-text font-medium">{roomId}</span>
+          </span>
+          <span className={`text-xs font-mono px-1.5 py-0.5 rounded ${
+            wsStatus === "open" ? "bg-nimbus-teal/20 text-nimbus-teal" :
+            wsStatus === "connecting" ? "bg-nimbus-gold/20 text-nimbus-gold" :
+            "bg-nimbus-coral/20 text-nimbus-coral"
+          }`}>
+            {wsStatus}
           </span>
           {mediaError && (
             <span className="text-xs text-nimbus-coral">Camera: {mediaError}</span>
